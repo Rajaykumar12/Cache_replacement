@@ -1,8 +1,8 @@
-# 🚀 Cache Replacement Algorithm Comparison
+# Cache Replacement Algorithm Comparison
 
 A comprehensive simulation and comparison of different cache replacement algorithms including traditional methods (LRU, FIFO) and machine learning-based approaches using XGBoost and LightGBM.
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Overview](#overview)
 - [Features](#features)
@@ -16,7 +16,7 @@ A comprehensive simulation and comparison of different cache replacement algorit
 - [Configuration](#configuration)
 - [Contributing](#contributing)
 
-## 🎯 Overview
+## Overview
 
 This project implements and compares multiple cache replacement algorithms to determine which performs best under different workload patterns. The project includes both traditional algorithms and novel machine learning-based approaches that predict future access patterns.
 
@@ -27,24 +27,24 @@ This project implements and compares multiple cache replacement algorithms to de
 - **Performance Metrics**: Comprehensive hit rate analysis
 - **Extensible Design**: Easy to add new algorithms or modify existing ones
 
-## ✨ Features
+## Features
 
-- 🔄 **Multiple Cache Algorithms**: Compare traditional and ML-based approaches
-- 📊 **Realistic Data Generation**: Zipfian distribution mimics real-world access patterns
-- 🤖 **Machine Learning Integration**: XGBoost and LightGBM models for intelligent caching
-- 📈 **Performance Analysis**: Detailed hit rate comparisons
-- ⚙️ **Configurable Parameters**: Easily adjust cache size, dataset size, and distribution parameters
-- 🎯 **Optimal Baseline**: Implementation of the theoretical optimal algorithm for comparison
+- **Multiple Cache Algorithms**: Compare traditional and ML-based approaches
+- **Realistic Data Generation**: Zipfian distribution mimics real-world access patterns
+- **Machine Learning Integration**: XGBoost and LightGBM models for intelligent caching
+- **Performance Analysis**: Detailed hit rate comparisons
+- **Configurable Parameters**: Easily adjust cache size, dataset size, and distribution parameters
+- **Optimal Baseline**: Implementation of the theoretical optimal algorithm for comparison
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 Cache_replacement/
-├── 📄 README.md
-├── 📁 data/
+├── README.md
+├── data/
 │   ├── app.py              # Data generation script
 │   └── training_data.csv   # Generated request dataset
-├── 📁 models/
+├── models/
 │   ├── lgb_model.py        # LightGBM model training
 │   ├── lgb_model.pkl       # Trained LightGBM model
 │   ├── xgb_model.py        # XGBoost model training
@@ -52,7 +52,7 @@ Cache_replacement/
 └── run_simpulation.py      # Main simulation script
 ```
 
-## 🛠️ Installation
+## Installation
 
 ### Prerequisites
 
@@ -72,7 +72,7 @@ git clone https://github.com/Rajaykumar12/Cache_replacement.git
 cd Cache_replacement
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Generate Training Data
 
@@ -117,7 +117,7 @@ ML-Based Cache Hit Rate:     23.12%
 Optimal Cache Hit Rate:      28.90%
 ```
 
-## 🔧 Cache Algorithms
+## Cache Algorithms
 
 ### 1. FIFO (First In, First Out)
 - **Strategy**: Evicts the oldest item in cache
@@ -144,7 +144,7 @@ Optimal Cache Hit Rate:      28.90%
 - **Use Case**: Upper bound baseline for comparison
 - **Note**: Requires future knowledge (not practical in real systems)
 
-## 🤖 Machine Learning Models
+## Machine Learning Models
 
 ### Feature Engineering
 
@@ -170,7 +170,7 @@ lgb.LGBMRegressor(
 )
 ```
 
-## 📊 Data Generation
+## Data Generation
 
 The project uses a **Zipfian distribution** to generate realistic access patterns:
 
@@ -189,7 +189,7 @@ NUM_ITEMS = 1000        # Unique items
 ZIPF_PARAM_A = 1.1      # Distribution skewness
 ```
 
-## 📈 Results
+## Results
 
 Typical performance hierarchy:
 
@@ -201,7 +201,7 @@ Typical performance hierarchy:
 
 *Results may vary based on data distribution and cache size*
 
-## ⚙️ Configuration
+## Configuration
 
 ### Cache Settings
 
@@ -228,7 +228,7 @@ lgb.LGBMRegressor(
 )
 ```
 
-## 🔄 Adding New Algorithms
+## Adding New Algorithms
 
 To add a new cache algorithm:
 
@@ -260,7 +260,7 @@ To add a new cache algorithm:
    print(f"New Cache Hit Rate: {new_cache.get_hit_rate():.2f}%")
    ```
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -268,23 +268,10 @@ To add a new cache algorithm:
 4. Push to branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📝 License
+## License
 
 This project is open source and available under the [MIT License](LICENSE).
 
-## 🙋‍♂️ Author
+## Author
 
 **Rajay Kumar** - [Rajaykumar12](https://github.com/Rajaykumar12)
-
-## 🎯 Future Enhancements
-
-- [ ] Deep learning models (LSTM, Transformer)
-- [ ] Multi-objective optimization (latency + hit rate)
-- [ ] Real-world trace evaluation
-- [ ] Adaptive cache sizing
-- [ ] Distributed cache simulation
-- [ ] Memory usage analysis
-
----
-
-⭐ **Star this repository if you found it helpful!**
