@@ -26,16 +26,16 @@ X_train, X_val, y_train, y_val = train_test_split(
 print(f"Training set size: {len(X_train)}")
 print(f"Validation set size: {len(X_val)}")
 
-lgbm = xgb.XGBRegressor(
+xgbm = xgb.XGBRegressor(
     objective='reg:absoluteerror', 
     n_estimators=1000,         
     learning_rate=0.05,
     max_depth=5,
     random_state=42,
-    n_jobs=-1,                 
+  n_jobs=-1,                 
 )
 
-lgbm.fit(
+xgbm.fit(
     X_train, y_train,
     eval_set=[(X_val, y_val)],
     eval_metric='rmse',
@@ -44,7 +44,7 @@ lgbm.fit(
 )
 
 print("\nEvaluating model performance...")
-predictions = lgbm.predict(X_val)
+predictions = xgbm.predict(X_val)
 
 rmse = np.sqrt(mean_squared_error(y_val, predictions))
 print(f"Validation RMSE: {rmse:.4f}")
@@ -53,5 +53,5 @@ print("This means, on average, the model's prediction for the time to the next r
 
 # --- 6. Save the Trained Model 💾 ---
 print(f"\nSaving the trained model to '{MODEL_SAVE_FILE}'...")
-joblib.dump(lgbm, MODEL_SAVE_FILE)
+joblib.dump(xgbm, MODEL_SAVE_FILE)
 print("Model saved successfully!")

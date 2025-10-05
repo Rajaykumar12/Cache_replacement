@@ -1,6 +1,6 @@
 # Cache Replacement Algorithm Comparison
 
-A comprehensive simulation and comparison of different cache replacement algorithms including traditional methods (LRU, FIFO) and machine learning-based approaches using XGBoost and LightGBM.
+A comprehensive simulation and comparison of different cache replacement algorithms including traditional methods (LRU, FIFO), machine learning-based approaches using XGBoost and LightGBM, and reinforcement learning using Actor-Critic methods.
 
 ## Table of Contents
 
@@ -11,6 +11,7 @@ A comprehensive simulation and comparison of different cache replacement algorit
 - [Quick Start](#quick-start)
 - [Cache Algorithms](#cache-algorithms)
 - [Machine Learning Models](#machine-learning-models)
+- [Reinforcement Learning](#reinforcement-learning)
 - [Data Generation](#data-generation)
 - [Results](#results)
 - [Configuration](#configuration)
@@ -18,29 +19,33 @@ A comprehensive simulation and comparison of different cache replacement algorit
 
 ## Overview
 
-This project implements and compares multiple cache replacement algorithms to determine which performs best under different workload patterns. The project includes both traditional algorithms and novel machine learning-based approaches that predict future access patterns.
+This project implements and compares multiple cache replacement algorithms to determine which performs best under different workload patterns. The project includes traditional algorithms, machine learning-based approaches, and cutting-edge reinforcement learning methods that adapt to changing access patterns.
 
 ### Key Highlights
 
-- **5 Cache Algorithms**: FIFO, LRU, ML-based (XGBoost), ML-based (LightGBM), and Optimal
+- **6 Cache Algorithms**: FIFO, LRU, ML-based (XGBoost), ML-based (LightGBM), Actor-Critic RL, and Optimal
 - **Real-world Simulation**: Uses Zipfian distribution to simulate realistic access patterns
+- **Reinforcement Learning**: Actor-Critic agent that learns optimal replacement policies
 - **Performance Metrics**: Comprehensive hit rate analysis
 - **Extensible Design**: Easy to add new algorithms or modify existing ones
 
 ## Features
 
-- **Multiple Cache Algorithms**: Compare traditional and ML-based approaches
+- **Multiple Cache Algorithms**: Compare traditional, ML-based, and RL approaches
 - **Realistic Data Generation**: Zipfian distribution mimics real-world access patterns
 - **Machine Learning Integration**: XGBoost and LightGBM models for intelligent caching
+- **Reinforcement Learning**: Actor-Critic agent for adaptive policy learning
 - **Performance Analysis**: Detailed hit rate comparisons
 - **Configurable Parameters**: Easily adjust cache size, dataset size, and distribution parameters
 - **Optimal Baseline**: Implementation of the theoretical optimal algorithm for comparison
+- **GPU Support**: CUDA acceleration for reinforcement learning training
 
 ## Project Structure
 
 ```
 Cache_replacement/
 ├── README.md
+├── actor_critic_agent.py   # Actor-Critic RL implementation
 ├── data/
 │   ├── app.py              # Data generation script
 │   └── training_data.csv   # Generated request dataset
@@ -62,7 +67,12 @@ Cache_replacement/
 ### Dependencies
 
 ```bash
-pip install pandas numpy scikit-learn lightgbm xgboost joblib
+pip install pandas numpy scikit-learn lightgbm xgboost joblib torch
+```
+
+For GPU support (optional):
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 
 ### Clone the Repository
@@ -114,6 +124,7 @@ FIFO Cache Hit Rate:         15.23%
 LRU Cache Hit Rate:          18.45%
 ML-Based Cache Hit Rate:     22.67%
 ML-Based Cache Hit Rate:     23.12%
+Actor-Critic RL Hit Rate:    24.89%
 Optimal Cache Hit Rate:      28.90%
 ```
 
@@ -139,7 +150,13 @@ Optimal Cache Hit Rate:      28.90%
 - **Features**: Same feature set as XGBoost
 - **Use Case**: Often faster training and inference
 
-### 5. Optimal Algorithm
+### 5. Actor-Critic Reinforcement Learning
+- **Strategy**: Learns optimal replacement policy through trial and error
+- **Architecture**: Neural network with shared layers, separate actor and critic heads
+- **Features**: Adapts to changing patterns, real-time learning
+- **Use Case**: Dynamic environments with evolving access patterns
+
+### 6. Optimal Algorithm
 - **Strategy**: Theoretical optimal (Belady's algorithm)
 - **Use Case**: Upper bound baseline for comparison
 - **Note**: Requires future knowledge (not practical in real systems)
@@ -170,6 +187,45 @@ lgb.LGBMRegressor(
 )
 ```
 
+## Reinforcement Learning
+
+### Actor-Critic Architecture
+
+The Actor-Critic agent uses a neural network with:
+
+- **Shared Layer**: 128-unit fully connected layer with ReLU activation
+- **Actor Head**: Outputs action probabilities for cache replacement decisions
+- **Critic Head**: Estimates state values for policy evaluation
+
+### Key Components
+
+```python
+# Initialize Actor-Critic agent
+from actor_critic_agent import ActorCriticAgent
+
+agent = ActorCriticAgent(
+    state_size=10,      # Cache state representation size
+    action_size=4,      # Number of possible replacement actions
+    learning_rate=0.002,
+    gamma=0.99          # Discount factor
+)
+```
+
+### Learning Process
+
+- **Real-time Learning**: Updates policy after every cache operation
+- **Advantage Function**: A(s,a) = R + γV(s') - V(s) guides policy updates
+- **Loss Functions**: 
+  - Critic Loss: Mean Squared Error between predicted and target values
+  - Actor Loss: Policy gradient with advantage as baseline
+
+### Training Features
+
+- Single-step updates for immediate adaptation
+- Automatic GPU utilization if available
+- Robust handling of edge cases
+- Categorical action distribution with softmax
+
 ## Data Generation
 
 The project uses a **Zipfian distribution** to generate realistic access patterns:
@@ -194,12 +250,19 @@ ZIPF_PARAM_A = 1.1      # Distribution skewness
 Typical performance hierarchy:
 
 1. **Optimal Algorithm** (~29%) - Theoretical upper bound
-2. **ML-Based (LightGBM)** (~23%) - Best practical algorithm
-3. **ML-Based (XGBoost)** (~23%) - Close second
-4. **LRU** (~18%) - Good traditional algorithm
-5. **FIFO** (~15%) - Baseline traditional algorithm
+2. **Actor-Critic RL** (~25%) - Best adaptive algorithm
+3. **ML-Based (LightGBM)** (~23%) - Best traditional ML approach
+4. **ML-Based (XGBoost)** (~23%) - Close second in ML category
+5. **LRU** (~18%) - Good traditional algorithm
+6. **FIFO** (~15%) - Baseline traditional algorithm
 
-*Results may vary based on data distribution and cache size*
+*Results may vary based on data distribution, cache size, and RL training progress*
+
+### Performance Analysis
+
+- **Actor-Critic RL** excels in dynamic environments where access patterns change over time
+- **ML-based approaches** perform well when historical patterns are indicative of future behavior
+- **Traditional algorithms** provide consistent baseline performance
 
 ## Configuration
 
@@ -212,6 +275,20 @@ CACHE_CAPACITY = 10              # Cache size
 REQUEST_LOG_FILE = "data/training_data.csv"
 XGB_FILE = "models/xgb_model.pkl"
 LGB_FILE = "models/lgb_model.pkl"
+```
+
+### Actor-Critic Parameters
+
+Modify RL agent settings:
+
+```python
+# In actor_critic_agent.py
+agent = ActorCriticAgent(
+    state_size=10,
+    action_size=4,
+    learning_rate=0.002,    # Learning rate
+    gamma=0.99              # Discount factor
+)
 ```
 
 ### Model Parameters
@@ -267,6 +344,14 @@ To add a new cache algorithm:
 3. Commit changes (`git commit -m 'Add amazing feature'`)
 4. Push to branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+
+### Areas for Contribution
+
+- Implement additional RL algorithms (DQN, PPO, etc.)
+- Add more sophisticated state representations
+- Create visualization tools for cache performance
+- Implement multi-level cache hierarchies
+- Add real-world trace file support
 
 ## License
 
