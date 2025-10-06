@@ -7,10 +7,10 @@ import seaborn as sns
 from matplotlib.patches import Rectangle
 
 # Import your existing RL components
-from dqn_agent import DQNAgent
-from policy_agent import PolicyGradientAgent
-from actor_critic_agent import ActorCriticAgent
-from cache_environment import RLCache
+from RL.dqn_agent import DQNAgent
+from RL.policy_agent import PolicyGradientAgent
+from RL.actor_critic_agent import ActorCriticAgent
+from RL.cache_environment import RLCache
 
 # --- Configuration ---
 CACHE_CAPACITY = 20

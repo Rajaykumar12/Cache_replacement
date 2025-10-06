@@ -1,6 +1,6 @@
 import numpy as np
 from collections import OrderedDict
-from dqn_agent import DQNAgent 
+from RL.dqn_agent import DQNAgent 
 
 # --- Reinforcement Learning Cache Environment ---
 class RLCache:
