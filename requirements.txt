@@ -1,4 +1,10 @@
 pandas
 numpy
-torch
 scikit-learn
+xgboost
+lightgbm
+joblib
+torch
+torchvision
+matplotlib
+seaborn
