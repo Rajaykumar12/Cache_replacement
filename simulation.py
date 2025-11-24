@@ -38,6 +38,9 @@ class RLHybridCache:
         self.w1, self.b1 = self.weights[0].T, self.weights[1]
         self.w2, self.b2 = self.weights[2].T, self.weights[3]
         self.w3, self.b3 = self.weights[4].T, self.weights[5]
+        
+        # Pre-allocate state buffer to avoid repeated malloc/GC
+        self.state_buffer = np.zeros((k, 3), dtype=np.float32)
 
     def _get_item_state(self, item_id, rank):
         recency = self.ts - self.cache.get(item_id, self.ts)
@@ -68,8 +71,9 @@ class RLHybridCache:
         current_ts = self.ts
         cap = self.capacity
         
-        # Create empty matrix
-        states = np.zeros((len(candidates), 3), dtype=np.float32)
+        # Use pre-allocated buffer (Zero Allocation)
+        num_candidates = len(candidates)
+        states = self.state_buffer[:num_candidates] # View of the buffer
         
         # Fill matrix - avoiding list comprehension overhead
         for i, item in enumerate(candidates):
@@ -106,7 +110,7 @@ if __name__ == "__main__":
     # Settings
     CACHE_CAPACITY = 30
     TAIL_SIZE = 16
-    DATA_FILE = "data/training_data.csv"
+    DATA_FILE = "data/zipf_100k.csv"
     MODEL_FILE = "models/rl_eviction_model.pth"
 
     # Setup
@@ -158,3 +162,12 @@ if __name__ == "__main__":
         runtime = model_runtimes[name]
         print(f"{name:<15} | {hit_rate:>6.2f}%    | {runtime:>8.4f}s")
     print("="*50)
+    
+    # Performance Comparison
+    lru_time = model_runtimes["LRU"]
+    rl_time = model_runtimes["RL-Hybrid"]
+    if lru_time > 0:
+        ratio = rl_time / lru_time
+        print(f"\n🚀 LRU is {ratio:.2f}x faster than RL-Hybrid")
+    else:
+        print("\n🚀 LRU runtime was 0.00s (too fast to compare)")
