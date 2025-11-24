@@ -52,6 +52,13 @@ class ValueDQNAgent:
             value = self.q_network(state_tensor)
         return value.item()
 
+    def get_values(self, states):
+        """Predicts the values for a batch of item states."""
+        with torch.no_grad():
+            states_tensor = torch.FloatTensor(states).to(self.device)
+            values = self.q_network(states_tensor)
+        return values.cpu().numpy().flatten()
+
     def remember(self, state, reward, next_state):
         """Stores an experience tuple in the replay buffer."""
         self.memory.append((state, reward, next_state))
