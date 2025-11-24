@@ -23,7 +23,8 @@ class ValueNetwork(nn.Module):
 class ValueDQNAgent:
     def __init__(self, state_size: int, learning_rate=0.001, gamma=0.95):
         self.state_size = state_size
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Force CPU for inference speed on small batches/single items
+        self.device = torch.device("cpu")
         
         self.q_network = ValueNetwork(state_size).to(self.device)
         self.target_network = ValueNetwork(state_size).to(self.device)
@@ -39,6 +40,14 @@ class ValueDQNAgent:
             states_tensor = torch.FloatTensor(states).to(self.device)
             values = self.q_network(states_tensor)
         return values.cpu().numpy().flatten()
+
+    def get_numpy_weights(self):
+        """Extracts weights and biases for fast numpy-based inference."""
+        params = list(self.q_network.parameters())
+        # params[0]: w1 (3, 64), params[1]: b1 (64)
+        # params[2]: w2 (64, 64), params[3]: b2 (64)
+        # params[4]: w3 (64, 1), params[5]: b3 (1)
+        return [p.detach().cpu().numpy() for p in params]
 
     def remember(self, state, reward, next_state):
         self.memory.append((state, reward, next_state))
