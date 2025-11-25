@@ -104,6 +104,104 @@ class RLHybridCache:
         total = self.hits + self.misses
         return (self.hits / total) * 100 if total > 0 else 0
 
+    def get_q_values(self):
+        # Helper to get Q-values for current candidates (for analysis)
+        candidates = list(islice(self.cache.keys(), self.k))
+        if not candidates: return []
+        
+        current_ts = self.ts
+        cap = self.capacity
+        num_candidates = len(candidates)
+        states = self.state_buffer[:num_candidates]
+        
+        for i, item in enumerate(candidates):
+            states[i, 0] = current_ts - self.cache[item]
+            states[i, 1] = self.freq[item]
+            states[i, 2] = (i + 1) / cap
+            
+        return self._predict_fast(states)
+
+class InstrumentedRLHybridCache(RLHybridCache):
+    def __init__(self, capacity: int, agent: ValueDQNAgent, k: int):
+        super().__init__(capacity, agent, k)
+        self.stats = {
+            'state_construction': 0.0,
+            'inference': 0.0,
+            'eviction_choice': 0.0,
+            'metadata_update': 0.0,
+            'total_evictions': 0
+        }
+
+    def _evict(self):
+        t0 = time.perf_counter()
+        
+        # 1. Select candidates
+        candidates = list(islice(self.cache.keys(), self.k))
+        
+        # 2. State Construction
+        t1 = time.perf_counter()
+        current_ts = self.ts
+        cap = self.capacity
+        num_candidates = len(candidates)
+        states = self.state_buffer[:num_candidates]
+        
+        for i, item in enumerate(candidates):
+            states[i, 0] = current_ts - self.cache[item]
+            states[i, 1] = self.freq[item]
+            states[i, 2] = (i + 1) / cap
+            
+        t2 = time.perf_counter()
+        
+        # 3. Inference
+        values = self._predict_fast(states)
+        t3 = time.perf_counter()
+        
+        # 4. Evict
+        victim_idx = np.argmin(values)
+        victim = candidates[victim_idx]
+        del self.cache[victim]
+        t4 = time.perf_counter()
+        
+        self.stats['state_construction'] += (t2 - t1)
+        self.stats['inference'] += (t3 - t2)
+        self.stats['eviction_choice'] += (t4 - t3)
+        self.stats['total_evictions'] += 1
+
+    def process_request(self, item_id: int):
+        t0 = time.perf_counter()
+        super().process_request(item_id)
+        t1 = time.perf_counter()
+        self.stats['metadata_update'] += (t1 - t0) # This includes eviction time, need to subtract
+        # Correction: metadata update is total time minus eviction time (if it happened)
+        # But since _evict is called inside, we can't easily subtract without more hooks.
+        # Simplified approach: Measure metadata update explicitly in the else/hit branch
+        # For now, let's just use the breakdown in _evict and estimate metadata update separately or refactor.
+        
+    # Refactored process_request for precise timing
+    def process_request(self, item_id: int):
+        t0 = time.perf_counter()
+        self.ts += 1
+        self.freq[item_id] = self.freq.get(item_id, 0) + 1
+        t1 = time.perf_counter()
+        self.stats['metadata_update'] += (t1 - t0)
+        
+        if item_id in self.cache:
+            t0 = time.perf_counter()
+            self.hits += 1
+            self.cache.move_to_end(item_id)
+            self.cache[item_id] = self.ts
+            t1 = time.perf_counter()
+            self.stats['metadata_update'] += (t1 - t0)
+        else:
+            self.misses += 1
+            if len(self.cache) >= self.capacity:
+                self._evict() # Stats collected inside
+            
+            t0 = time.perf_counter()
+            self.cache[item_id] = self.ts
+            t1 = time.perf_counter()
+            self.stats['metadata_update'] += (t1 - t0)
+
 # =================== MAIN SIMULATION ========================
 
 if __name__ == "__main__":

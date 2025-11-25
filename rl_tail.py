@@ -7,27 +7,35 @@ from collections import deque, OrderedDict
 import pandas as pd
 
 class ValueNetwork(nn.Module):
-    def __init__(self, state_size):
+    def __init__(self, state_size, hidden_dims=[64, 64]):
         super(ValueNetwork, self).__init__()
-        self.network = nn.Sequential(
-            nn.Linear(state_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1)
-        )
+        layers = []
+        input_dim = state_size
+        for h_dim in hidden_dims:
+            layers.append(nn.Linear(input_dim, h_dim))
+            layers.append(nn.ReLU())
+            input_dim = h_dim
+        layers.append(nn.Linear(input_dim, 1))
+        self.network = nn.Sequential(*layers)
 
     def forward(self, state):
         return self.network(state)
 
 class ValueDQNAgent:
-    def __init__(self, state_size: int, learning_rate=0.001, gamma=0.95):
+    def __init__(self, state_size: int, learning_rate=0.001, gamma=0.95, feature_mask=None, hidden_dims=[64, 64]):
         self.state_size = state_size
-        # Force CPU for inference speed on small batches/single items
+        self.feature_mask = feature_mask # List of booleans [recency, freq, rank]
+        
+        # Adjust state size based on mask
+        if self.feature_mask:
+            self.input_size = sum(self.feature_mask)
+        else:
+            self.input_size = state_size
+            
         self.device = torch.device("cpu")
         
-        self.q_network = ValueNetwork(state_size).to(self.device)
-        self.target_network = ValueNetwork(state_size).to(self.device)
+        self.q_network = ValueNetwork(self.input_size, hidden_dims).to(self.device)
+        self.target_network = ValueNetwork(self.input_size, hidden_dims).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
@@ -36,6 +44,9 @@ class ValueDQNAgent:
         self.gamma = gamma
 
     def get_values(self, states):
+        if self.feature_mask:
+            states = states[:, self.feature_mask]
+            
         with torch.no_grad():
             states_tensor = torch.FloatTensor(states).to(self.device)
             values = self.q_network(states_tensor)
@@ -44,9 +55,6 @@ class ValueDQNAgent:
     def get_numpy_weights(self):
         """Extracts weights and biases for fast numpy-based inference."""
         params = list(self.q_network.parameters())
-        # params[0]: w1 (3, 64), params[1]: b1 (64)
-        # params[2]: w2 (64, 64), params[3]: b2 (64)
-        # params[4]: w3 (64, 1), params[5]: b3 (1)
         return [p.detach().cpu().numpy() for p in params]
 
     def remember(self, state, reward, next_state):
