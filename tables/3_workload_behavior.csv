@@ -1,0 +1,9 @@
+Trace,Workload Type,LRU Hit Rate (%),RL-Hybrid Hit Rate (%),LRU Runtime (s),RL-Hybrid Runtime (s),RL Slowdown (x)
+bursty.csv,Burst patterns,84.59,84.59,0.02,0.3,13.28
+gaussian.csv,Localized access,0.5,0.51,0.03,1.78,54.28
+uniform.csv,Random access,0.33,0.33,0.03,1.75,52.96
+zipf_alpha_0.5.csv,Skewed distribution,0.75,1.21,0.03,1.77,52.7
+zipf_alpha_0.8.csv,Skewed distribution,7.27,14.25,0.03,1.52,46.18
+zipf_alpha_1.0.csv,Skewed distribution,25.2,29.88,0.03,0.87,27.63
+zipf_alpha_1.2.csv,Skewed distribution,41.1,49.83,0.03,0.91,30.62
+zipf_alpha_1.5.csv,Skewed distribution,79.93,82.74,0.02,0.33,15.11

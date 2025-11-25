@@ -20,17 +20,29 @@ def analyze_model(model_file, trace_file):
     # 5.1 Weight Inspection
     print("\n[5.1] Weight Inspection")
     weights = agent.get_numpy_weights()
-    w1 = weights[0] # (3, 64)
+    w1 = weights[0] # Shape: (3, 64) or (64, 3) depending on implementation
+    
+    print(f"W1 shape: {w1.shape}")
     
     # Simple importance: sum of absolute weights connected to each input feature
-    feature_importance = np.sum(np.abs(w1), axis=1)
+    # If w1 is (in_features, out_features), sum across axis 1
+    # If w1 is (out_features, in_features), sum across axis 0
+    if w1.shape[0] == 3:
+        feature_importance = np.sum(np.abs(w1), axis=1)
+    else:
+        feature_importance = np.sum(np.abs(w1), axis=0)
+    
     features = ['Recency', 'Frequency', 'Rank']
     
     print("Feature Importance (Sum Abs Weights Layer 1):")
     for f, imp in zip(features, feature_importance):
         print(f"  {f}: {imp:.4f}")
         
-    pd.DataFrame({'Feature': features, 'Importance': feature_importance}).to_csv("results_weights.csv", index=False)
+    weights_df = pd.DataFrame({
+        'Feature': features, 
+        'Importance': list(feature_importance)
+    })
+    weights_df.to_csv("results_weights.csv", index=False)
     
     # 5.2 Q-Value Analysis & 5.4 Feature Correlation
     print("\n[5.2 & 5.4] Q-Value Analysis & Correlation")
