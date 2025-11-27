@@ -4,7 +4,7 @@ import time
 import argparse
 import os
 from collections import OrderedDict
-from baselines import LFUCache, ARCCache
+from experiments.baselines import LFUCache, ARCCache
 from simulation import LRUCache, RLHybridCache
 from rl_tail import ValueDQNAgent
 import torch
