@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Cache Simulation</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            color: #e2e8f0;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        h1 {
+            color: #38bdf8;
+            margin-bottom: 20px;
+            font-size: 2.5rem;
+            text-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 250px 1fr;
+            gap: 20px;
+            width: 100%;
+            max-width: 1600px;
+        }
+        .controls {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            height: fit-content;
+        }
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+        .model-card {
+            background: #1e293b;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            border-top: 4px solid transparent;
+            display: flex;
+            flex-direction: column;
+        }
+        .model-card.LRU { border-color: #ef4444; }
+        .model-card.LFU { border-color: #f59e0b; }
+        .model-card.ARC { border-color: #10b981; }
+        .model-card.RL { border-color: #3b82f6; }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .model-title { font-size: 1.25rem; font-weight: bold; }
+        .progress-bar {
+            height: 4px;
+            background: #334155;
+            border-radius: 2px;
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: currentColor;
+            width: 0%;
+            transition: width 0.2s;
+        }
+        
+        .metrics-row {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .metric {
+            background: #334155;
+            padding: 8px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .metric-val { font-weight: bold; font-size: 1.1rem; }
+        .metric-lbl { font-size: 0.75rem; color: #94a3b8; }
+
+        .charts-wrapper {
+            display: flex;
+            gap: 10px;
+            height: 250px;
+        }
+        .line-chart-container {
+            flex: 2;
+            position: relative;
+        }
+        .bar-chart-container {
+            flex: 1;
+            position: relative;
+        }
+
+        label { display: block; margin-bottom: 8px; font-weight: 600; color: #94a3b8; }
+        select, input { width: 100%; padding: 10px; margin-bottom: 15px; background: #334155; border: 1px solid #475569; border-radius: 6px; color: white; }
+        button { width: 100%; padding: 12px; background: #3b82f6; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-bottom: 10px; }
+        button:hover { background: #2563eb; }
+        button.stop { background: #ef4444; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    </style>
+</head>
+<body>
+
+    <h1>Cache Simulation Live Demo</h1>
+
+    <div class="container">
+        <!-- Controls -->
+        <div class="controls">
+            <h2>Config</h2>
+            <label>Distribution</label>
+            <select id="distribution">
+                <option value="zipf">Zipfian</option>
+                <option value="uniform">Uniform</option>
+                <option value="gaussian">Gaussian</option>
+                <option value="bursty">Bursty</option>
+                <option value="periodic">Periodic</option>
+                <option value="adversarial">Adversarial</option>
+            </select>
+
+            <label>Cache Size</label>
+            <input type="number" id="cacheSize" value="30">
+
+            <label>Requests</label>
+            <input type="number" id="numRequests" value="1000">
+
+            <label>Base Delay (s)</label>
+            <input type="number" id="speed" value="0.001" step="0.001">
+
+            <button id="startBtn" onclick="startSimulation()">Start</button>
+            <button id="stopBtn" class="stop" onclick="stopSimulation()" disabled>Stop</button>
+        </div>
+
+        <!-- Dashboard -->
+        <div class="dashboard">
+            <!-- LRU -->
+            <div class="model-card LRU">
+                <div class="card-header">
+                    <span class="model-title" style="color: #ef4444">LRU</span>
+                    <span id="status-LRU" style="font-size: 0.8rem">Idle</span>
+                </div>
+                <div class="progress-bar"><div id="prog-LRU" class="progress-fill" style="color: #ef4444"></div></div>
+                <div class="metrics-row">
+                    <div class="metric"><div class="metric-val" id="hr-LRU">0%</div><div class="metric-lbl">Hit Rate</div></div>
+                    <div class="metric"><div class="metric-val" id="step-LRU">0</div><div class="metric-lbl">Requests</div></div>
+                </div>
+                <div class="charts-wrapper">
+                    <div class="line-chart-container"><canvas id="line-LRU"></canvas></div>
+                    <div class="bar-chart-container"><canvas id="bar-LRU"></canvas></div>
+                </div>
+            </div>
+
+            <!-- LFU -->
+            <div class="model-card LFU">
+                <div class="card-header">
+                    <span class="model-title" style="color: #f59e0b">LFU</span>
+                    <span id="status-LFU" style="font-size: 0.8rem">Idle</span>
+                </div>
+                <div class="progress-bar"><div id="prog-LFU" class="progress-fill" style="color: #f59e0b"></div></div>
+                <div class="metrics-row">
+                    <div class="metric"><div class="metric-val" id="hr-LFU">0%</div><div class="metric-lbl">Hit Rate</div></div>
+                    <div class="metric"><div class="metric-val" id="step-LFU">0</div><div class="metric-lbl">Requests</div></div>
+                </div>
+                <div class="charts-wrapper">
+                    <div class="line-chart-container"><canvas id="line-LFU"></canvas></div>
+                    <div class="bar-chart-container"><canvas id="bar-LFU"></canvas></div>
+                </div>
+            </div>
+
+            <!-- ARC -->
+            <div class="model-card ARC">
+                <div class="card-header">
+                    <span class="model-title" style="color: #10b981">ARC</span>
+                    <span id="status-ARC" style="font-size: 0.8rem">Idle</span>
+                </div>
+                <div class="progress-bar"><div id="prog-ARC" class="progress-fill" style="color: #10b981"></div></div>
+                <div class="metrics-row">
+                    <div class="metric"><div class="metric-val" id="hr-ARC">0%</div><div class="metric-lbl">Hit Rate</div></div>
+                    <div class="metric"><div class="metric-val" id="step-ARC">0</div><div class="metric-lbl">Requests</div></div>
+                </div>
+                <div class="charts-wrapper">
+                    <div class="line-chart-container"><canvas id="line-ARC"></canvas></div>
+                    <div class="bar-chart-container"><canvas id="bar-ARC"></canvas></div>
+                </div>
+            </div>
+
+            <!-- RL -->
+            <div class="model-card RL">
+                <div class="card-header">
+                    <span class="model-title" style="color: #3b82f6">RL-Hybrid</span>
+                    <span id="status-RL" style="font-size: 0.8rem">Idle</span>
+                </div>
+                <div class="progress-bar"><div id="prog-RL" class="progress-fill" style="color: #3b82f6"></div></div>
+                <div class="metrics-row">
+                    <div class="metric"><div class="metric-val" id="hr-RL">0%</div><div class="metric-lbl">Hit Rate</div></div>
+                    <div class="metric"><div class="metric-val" id="step-RL">0</div><div class="metric-lbl">Requests</div></div>
+                </div>
+                <div class="charts-wrapper">
+                    <div class="line-chart-container"><canvas id="line-RL"></canvas></div>
+                    <div class="bar-chart-container"><canvas id="bar-RL"></canvas></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        const models = ['LRU', 'LFU', 'ARC', 'RL'];
+        const lineCharts = {};
+        const barCharts = {};
+        const chartData = {};
+        const colors = { 'LRU': '#ef4444', 'LFU': '#f59e0b', 'ARC': '#10b981', 'RL': '#3b82f6' };
+        let totalRequests = 1000;
+
+        function initCharts() {
+            models.forEach(m => {
+                chartData[m] = { labels: [], data: [] };
+                
+                // Line Chart
+                const ctxLine = document.getElementById(`line-${m}`).getContext('2d');
+                lineCharts[m] = new Chart(ctxLine, {
+                    type: 'line',
+                    data: {
+                        labels: chartData[m].labels,
+                        datasets: [{
+                            label: 'Hit Rate %',
+                            data: chartData[m].data,
+                            borderColor: colors[m],
+                            backgroundColor: colors[m] + '20',
+                            tension: 0.4,
+                            fill: true,
+                            pointRadius: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: false,
+                        scales: {
+                            y: { 
+                                beginAtZero: false, // Allow zoom in
+                                grid: { color: '#334155' }, 
+                                ticks: { color: '#94a3b8' } 
+                            },
+                            x: { display: false }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+
+                // Bar Chart
+                const ctxBar = document.getElementById(`bar-${m}`).getContext('2d');
+                barCharts[m] = new Chart(ctxBar, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Hits', 'Misses'],
+                        datasets: [{
+                            data: [0, 0],
+                            backgroundColor: ['#22c55e', '#ef4444']
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: false,
+                        scales: {
+                            y: { display: false },
+                            x: { display: false }
+                        },
+                        plugins: { legend: { display: false } }
+                    }
+                });
+            });
+        }
+
+        function startSimulation() {
+            if (ws) ws.close();
+
+            const distribution = document.getElementById('distribution').value;
+            const cacheSize = document.getElementById('cacheSize').value;
+            totalRequests = parseInt(document.getElementById('numRequests').value);
+            const speedDelay = document.getElementById('speed').value;
+
+            // Reset UI
+            models.forEach(m => {
+                chartData[m].labels = [];
+                chartData[m].data = [];
+                
+                lineCharts[m].data.labels = [];
+                lineCharts[m].data.datasets[0].data = [];
+                lineCharts[m].update();
+
+                barCharts[m].data.datasets[0].data = [0, 0];
+                barCharts[m].update();
+
+                document.getElementById(`status-${m}`).innerText = "Running...";
+                document.getElementById(`prog-${m}`).style.width = "0%";
+                document.getElementById(`hr-${m}`).innerText = "0%";
+                document.getElementById(`step-${m}`).innerText = "0";
+            });
+
+            // Connect WS
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ distribution, cacheSize, numRequests: totalRequests, speedDelay }));
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.status === "done") {
+                    document.getElementById(`status-${data.model}`).innerText = "Done";
+                    return;
+                }
+
+                const m = data.model;
+                
+                // Update Metrics
+                document.getElementById(`hr-${m}`).innerText = data.hitRate.toFixed(1) + '%';
+                document.getElementById(`step-${m}`).innerText = data.step;
+                
+                // Update Progress
+                const prog = (data.step / totalRequests) * 100;
+                document.getElementById(`prog-${m}`).style.width = `${prog}%`;
+
+                // Update Charts (Throttled)
+                if (data.step % 10 === 0) {
+                    // Line Chart
+                    chartData[m].labels.push(data.step);
+                    chartData[m].data.push(data.hitRate);
+                    
+                    if (chartData[m].labels.length > 50) {
+                        chartData[m].labels.shift();
+                        chartData[m].data.shift();
+                    }
+                    
+                    lineCharts[m].data.labels = chartData[m].labels;
+                    lineCharts[m].data.datasets[0].data = chartData[m].data;
+                    lineCharts[m].update('none');
+
+                    // Bar Chart
+                    barCharts[m].data.datasets[0].data = [data.hits, data.misses];
+                    barCharts[m].update('none');
+                }
+            };
+
+            ws.onclose = () => {
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('stopBtn').disabled = true;
+            };
+        }
+
+        function stopSimulation() {
+            if (ws) ws.close();
+        }
+
+        initCharts();
+    </script>
+</body>
+</html>
