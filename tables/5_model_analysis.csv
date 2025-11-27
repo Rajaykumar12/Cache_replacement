@@ -1,0 +1,14 @@
+Metric,Value
+Feature Importance - Recency,19.4817
+Feature Importance - Frequency,18.1415
+Feature Importance - Rank,20.8101
+Q-Value Mean,-2.0125
+Q-Value Std,1.6921
+Q-Value Min,-3.7705
+Q-Value Max,10.5977
+Q-Value Range,14.3682
+Total Parameters (Base Model),4481.0
+State Construction Time (μs),5.0258
+Inference Time (μs),10.798
+Eviction Choice Time (μs),1.3178
+LRU vs RL Slowdown (Cache=30),38.0071
