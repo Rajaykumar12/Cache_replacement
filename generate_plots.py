@@ -65,9 +65,11 @@ plt.close()
 
 # =================== PLOT 3: Runtime vs k (Candidate Size) ===================
 print("[3/8] Generating: Runtime vs k...")
-k_data = sensitivity[sensitivity['Trace'] == 'zipf_alpha_1.0.csv'].copy()
+k_data = sensitivity[(sensitivity['Trace'] == 'zipf_alpha_1.0.csv') & (sensitivity['Algorithm'] == 'RL-Hybrid')].copy()
 k_data = k_data[k_data['k'].isin([4, 8, 16, 32])]
 
+k_data = k_data.groupby('k', as_index=False)['Runtime (s)'].mean()
+k_data = k_data.sort_values('k')
 plt.figure(figsize=(10, 6))
 plt.plot(k_data['k'], k_data['Runtime (s)'], marker='o', linewidth=2, markersize=10, color='#1f77b4')
 plt.xlabel('k (Candidate Size)', fontsize=14)
@@ -82,14 +84,15 @@ plt.close()
 print("[4/8] Generating: Hit rate vs Zipf α...")
 zipf_data = sensitivity[sensitivity['Trace'].str.contains('zipf_alpha')].copy()
 zipf_data['alpha'] = zipf_data['Trace'].str.extract(r'(\d\.\d)').astype(float)
+zipf_data = zipf_data.groupby(['Algorithm', 'alpha'], as_index=False)['Hit Rate (%)'].mean()
 
 plt.figure(figsize=(10, 6))
 for algo in zipf_data['Algorithm'].unique():
     data = zipf_data[zipf_data['Algorithm'] == algo].sort_values('alpha')
     plt.plot(data['alpha'], data['Hit Rate (%)'], marker='o', label=algo, linewidth=2)
 
-plt.xlabel('Zipf α', fontsize=14)
-plt.ylabel(' Hit Rate (%)', fontsize=14)
+plt.xlabel('Zipf α (Workload Locality)', fontsize=14)
+plt.ylabel('Hit Rate (%)', fontsize=14)
 plt.title('Hit Rate vs Zipf Distribution α', fontsize=16, fontweight='bold')
 plt.legend()
 plt.grid(True, alpha=0.3)
