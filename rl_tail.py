@@ -7,7 +7,7 @@ from collections import deque, OrderedDict
 import pandas as pd
 
 class ValueNetwork(nn.Module):
-    def __init__(self, state_size, hidden_dims=[64, 64]):
+    def __init__(self, state_size, hidden_dims=[16, 16]):
         super(ValueNetwork, self).__init__()
         layers = []
         input_dim = state_size
@@ -22,7 +22,7 @@ class ValueNetwork(nn.Module):
         return self.network(state)
 
 class ValueDQNAgent:
-    def __init__(self, state_size: int, learning_rate=0.001, gamma=0.95, feature_mask=None, hidden_dims=[64, 64]):
+    def __init__(self, state_size: int, learning_rate=0.001, gamma=0.95, feature_mask=None, hidden_dims=[16, 16]):
         self.state_size = state_size
         self.feature_mask = feature_mask # List of booleans [recency, freq, rank]
         
