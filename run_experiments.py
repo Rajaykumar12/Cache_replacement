@@ -8,7 +8,7 @@ from simulation import LRUCache, RLHybridCache
 from rl_tail import ValueDQNAgent
 import torch
 
-def run_single_experiment(algorithm, cache_size, trace_file, model_file=None, k=16, feature_mask=None, hidden_dims=[64, 64]):
+def run_single_experiment(algorithm, cache_size, trace_file, model_file=None, k=16, feature_mask=None, hidden_dims=[16, 16]):
     # Load Data
     try:
         df = pd.read_csv(trace_file)
