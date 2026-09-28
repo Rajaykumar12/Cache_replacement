@@ -1,0 +1,16 @@
+trace gain ci
+bursty -0.185 0.126
+uniform -0.027 0.090
+web 0.265 0.520
+gaussian 0.375 0.656
+periodic 0.393 0.610
+lifecycle 0.447 0.808
+zipf-100k 0.705 0.714
+zipf-a1.2 0.938 0.789
+zipf-a0.5 0.957 0.955
+zipf-a1.5 1.112 0.938
+zipf-a0.8 1.176 0.278
+zipf-a1.0 1.287 0.618
+phases 1.613 2.104
+cycle 6.167 9.972
+adversarial 48.550 0.000

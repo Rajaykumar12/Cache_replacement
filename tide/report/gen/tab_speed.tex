@@ -1,11 +1,20 @@
-\begin{tabular}{lrrrrrrr}
+\begin{tabular}{llrrrr}
 \toprule
-Trace & Requests & $c$ & ARC req/s & TIDE req/s & p50 (\textmu s) & p99 (\textmu s) & Training \% \\
+Trace & Implementation & Req/s & p50 ($\mu$s) & p99 ($\mu$s) & p99.9 ($\mu$s) \\
 \midrule
-zipf-100k & 0.1M & 185 & 3,995k & 110k & 14.6 & 22.9 & 21 \\
-web & 0.1M & 50 & 1,864k & 45k & 14.8 & 20.2 & 19 \\
-lifecycle & 1M & 708 & 3,709k & 123k & 15.2 & 30.0 & 20 \\
-cycle & 1M & 273 & 2,208k & 76k & 13.9 & 21.9 & 27 \\
-phases & 1M & 2018 & 2,516k & 84k & 14.3 & 21.8 & 19 \\
+MSR hm\_0 & ARC & 2,487k & 0.16 & 1.0 & 3.1 \\
+ & TIDE, NumPy & 128k & 2.56 & 133.5 & 183.3 \\
+ & TIDE, Numba sync & 150k & 2.49 & 87.3 & 134.3 \\
+ & TIDE, Numba async & 155k & 2.90 & 25.8 & 64.1 \\
+\midrule
+Twitter c50 & ARC & 1,099k & 0.79 & 1.8 & 4.3 \\
+ & TIDE, NumPy & 48k & 14.15 & 219.3 & 410.8 \\
+ & TIDE, Numba sync & 83k & 9.62 & 112.2 & 125.2 \\
+ & TIDE, Numba async & 108k & 9.43 & 20.8 & 58.2 \\
+\midrule
+Meta CDN reag & ARC & 1,649k & 0.28 & 1.0 & 5.0 \\
+ & TIDE, NumPy & 81k & 7.16 & 186.8 & 221.9 \\
+ & TIDE, Numba sync & 122k & 4.99 & 95.9 & 110.6 \\
+ & TIDE, Numba async & 145k & 5.12 & 17.5 & 62.7 \\
 \bottomrule
 \end{tabular}

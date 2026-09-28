@@ -8,6 +8,7 @@
 \usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{array}
+\usepackage{url}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning}
@@ -28,7 +29,7 @@ Sahyadri College of Engineering \& Management, Mangaluru, India}
 \maketitle
 
 \begin{abstract}
-Every cache has to decide which item to remove when it runs out of space. Classic rules such as LRU and LFU each work well on some workloads and poorly on others. ARC improves on them by balancing recency against frequency, but once it has picked a list to shrink it always removes the oldest item in that list. This chapter presents TIDE, a design that keeps ARC exactly as it is and hands the final eviction choice to a feedforward neural network trained continually on live traffic. The network regresses, for each of at most six candidates, a scaled logarithm of the time until the item is requested again, which is the quantity Belady's optimal rule ranks by. It is trained online by backpropagation and Adam from delayed and right-censored labels that the request stream produces on its own, replayed through an experience buffer, with no offline dataset and no reward signal. The network may also decide not to cache a new item at all, and a shadow copy of ARC takes control back when the network is wrong. Across 43 trace and cache-size settings, TIDE has the best mean normalised hit rate among six policies (0.379 against 0.334 for S3-FIFO and 0.306 for ARC), gains up to 34.5 points over ARC on workloads with learnable structure, and never trails ARC by more than 0.54 points.
+Every cache has to decide which item to remove when it runs out of space. ARC balances recency against frequency, but once it has picked a list to shrink it always removes the oldest item in that list. This chapter presents TIDE, a design that keeps ARC exactly as it is and hands the final eviction choice to a compact feedforward neural network trained continually on live traffic. The network regresses, for each of at most six candidates, a scaled logarithm of the time until the item is requested again, the quantity Belady's optimal rule ranks by. It is trained online by backpropagation and Adam from delayed and right-censored labels that the request stream produces on its own, replayed through an experience buffer and applied by a background thread, so that training never blocks a request. A shadow copy of ARC takes control back when the network falls behind. We compare TIDE with seven classic and three learned policies. On fifteen synthetic workloads it has the best mean normalised hit rate (0.368, against 0.305 for ARC and 0.296 for Cacheus) and gains up to 48.6 points where recency is misleading. On three real traces (block storage, key-value and CDN) it does not beat ARC, trailing it by 0.39 points on average, while still beating S3-FIFO and every learned baseline. A compiled implementation with asynchronous training cuts the 99th-percentile request latency from 133--219\,$\mu$s to 18--26\,$\mu$s.
 
 \keywords{Deep learning \and Neural networks \and Online learning \and Cache replacement \and Adaptive replacement cache \and Eviction policy}
 \end{abstract}
@@ -44,7 +45,7 @@ Learned policies try to replace these fixed guesses with a model trained on real
 
 The learning problem is the centre of this chapter. The network sees a handful of candidates, each described by twelve numbers, and must predict how far away each candidate's next request is. It never sees a labelled dataset: the correct answer for each prediction arrives later, when the item is requested again, or never arrives, in which case it must be treated as a censored observation. We show that a deliberately compact network, one hidden layer of 64 rectified linear units, trained continually by backpropagation on these delayed labels and stabilised by an experience replay buffer, is enough to learn periodic and phase-dependent reuse patterns that no fixed heuristic can see.
 
-This chapter makes four contributions. It frames eviction inside ARC as a regression problem over a small, fixed set of candidates. It presents the network, its input representation, its target and its online training procedure in full. It gives simple arguments for how the design should behave, including its cost and how far it can fall behind ARC. Finally, it tests those arguments on fifteen workloads against five classic policies.
+This chapter makes four contributions. It frames eviction inside ARC as a regression problem over a small, fixed set of candidates. It presents the network, its input representation, its target and its online training procedure in full, together with a compiled implementation that trains asynchronously. It gives simple arguments for how the design should behave, including its cost and how far it can fall behind ARC. Finally, it tests those arguments against ten baselines on synthetic workloads and on real traces, and reports where the design helps and where it does not.
 
 \section{Related Work}
 \label{sec:background}
@@ -68,7 +69,7 @@ Policy & Main signal & Where it struggles \\
 LRU & Time since last use & Scans and loops longer than the cache \\
 LFU & Number of uses & Holds on to items that are no longer popular \\
 2Q~\cite{johnson1994} & Trial queue, then LRU & Queue sizes are fixed in advance \\
-LIRS~\cite{jiang2002} & Gap between uses & Extra bookkeeping and tuning \\
+LIRS~\cite{jiang2002} & Gap between uses & Very small caches; extra bookkeeping \\
 ARC~\cite{megiddo2003} & Recency and frequency lists & Always removes the oldest item of a list \\
 S3-FIFO~\cite{yang2023} & Small and main FIFO queues & No view of when an item returns \\
 SIEVE~\cite{zhang2024} & FIFO with a visited bit & Only a yes or no view of reuse \\
@@ -84,7 +85,7 @@ This choice of list is ARC's strength. Its weakness is what happens next: it alw
 
 \subsection{Learned Policies}
 
-Several groups have trained models to make eviction decisions (Table~\ref{tab:learned}). Hawkeye learns from Belady's rule replayed on past requests~\cite{jain2016}. LRB trains gradient-boosted trees online for content delivery caches~\cite{song2020}. Parrot imitates Belady's rule with a deep network trained offline, and reports that imitation outperforms a reinforcement learning formulation of the same task~\cite{liu2020}. CACHEUS mixes the advice of two heuristics~\cite{rodriguez2021}. HALP is the closest to our idea: a heuristic suggests a few candidates and a small neural network with one hidden layer picks one~\cite{song2023}. None of them uses ARC's choice of list as a starting point.
+Several groups have trained models to make eviction decisions (Table~\ref{tab:learned}). Hawkeye learns from Belady's rule replayed on past requests~\cite{jain2016}. LeCaR weighs an LRU and an LFU expert by the regret of their past evictions~\cite{vietri2018}, and CACHEUS extends it with scan- and churn-resistant experts~\cite{rodriguez2021}. LRB trains gradient-boosted trees online for content delivery caches~\cite{song2020}. Parrot imitates Belady's rule with a deep network trained offline, and reports that imitation outperforms a reinforcement learning formulation of the same task~\cite{liu2020}. HALP is the closest to our idea: a heuristic suggests a few candidates and a small neural network with one hidden layer picks one~\cite{song2023}. None of them uses ARC's choice of list as a starting point.
 
 \begin{table}[htbp]
 \centering
@@ -95,9 +96,10 @@ Several groups have trained models to make eviction decisions (Table~\ref{tab:le
 Policy & Learns from & Role of a heuristic \\
 \midrule
 Hawkeye & Belady's rule on past requests & None \\
+LeCaR & Regret on removed items & Mixes LRU and LFU \\
+CACHEUS & Regret on removed items & Mixes two heuristics \\
 LRB & Relaxed Belady rule, online & None \\
 Parrot & Belady's rule, offline & None \\
-CACHEUS & Regret on removed items & Mixes two heuristics \\
 HALP & Preference feedback, online & Suggests candidates \\
 TIDE & Time until next request, online & ARC picks the list and is the fallback \\
 \bottomrule
@@ -123,14 +125,14 @@ We treat this as regression rather than classification on purpose. A classifier 
 
 \subsection{Overview}
 
-TIDE keeps all of ARC: its four lists, its target size and its choice of which list to shrink. The only change is the last step. Instead of removing the oldest item of the chosen list, TIDE scores a few candidates with the network and removes the one it expects to be needed last. Figure~\ref{fig:architecture} shows the parts of the design: a decision path that runs on every miss, and a learning path that turns what happens next into training data.
+TIDE keeps all of ARC: its four lists, its target size and its choice of which list to shrink. The only change is the last step. Instead of removing the oldest item of the chosen list, TIDE scores a few candidates with the network and removes the one it expects to be needed last. Figure~\ref{fig:architecture} shows the parts of the design: a decision path that runs on every miss, and a learning path, run by a separate thread, that turns what happens next into training data.
 
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[
   box/.style={draw, minimum height=0.9cm, align=center, font=\small, inner sep=4pt},
   arr/.style={-{Latex[length=2mm]}},
-  node distance=0.9cm and 0.6cm
+  node distance=0.9cm and 0.8cm
 ]
 \node[box] (arc) {ARC\\picks list};
 \node[box, right=of arc] (cand) {Up to six\\candidates};
@@ -139,15 +141,17 @@ TIDE keeps all of ARC: its four lists, its target size and its choice of which l
 \node[box, below=of cand] (pend) {Saved\\snapshots};
 \node[box, below=of net] (buf) {Replay\\buffer};
 \node[box, below=of rule] (shadow) {Shadow\\ARC};
+\node[box, dashed, below=0.7cm of buf] (tr) {Trainer thread\\(Adam, no GIL)};
 \draw[arr] (arc) -- (cand);
 \draw[arr] (cand) -- (net);
 \draw[arr] (net) -- (rule);
 \draw[arr] (cand) -- (pend);
 \draw[arr] (pend) -- node[above, font=\scriptsize]{labels} (buf);
-\draw[arr] (buf) -- node[left, font=\scriptsize]{Adam} (net);
+\draw[arr] (buf) -- (tr);
+\draw[arr] (tr.east) to[out=0, in=-45] node[pos=0.35, right, font=\scriptsize]{new weights} (net.south east);
 \draw[arr] (shadow) -- node[right, font=\scriptsize]{fallback} (rule);
 \end{tikzpicture}
-\caption{The parts of TIDE. ARC picks the list, the network ranks a few candidates, snapshots of every scored candidate become training examples once their outcome is known, and a shadow copy of ARC decides when to hand control back.}
+\caption{The parts of TIDE. ARC picks the list, the network ranks a few candidates, snapshots of every scored candidate become training examples once their outcome is known, a background thread trains on them and publishes new weights, and a shadow copy of ARC decides when to hand control back.}
 \label{fig:architecture}
 \end{figure}
 
@@ -239,7 +243,7 @@ The network is small by design, for three reasons. First, it runs on every miss,
 
 The network is trained continually while the cache runs, with no offline dataset. At decision time the true reuse distance of a candidate is unknown by definition, so TIDE uses delayed labelling. Each time a candidate is scored, a snapshot of its feature vector and the current time $t_0$ is saved. If the item is requested again at time $t_1$, the snapshot is labelled $g(t_1 - t_0)$. If it has not come back after a window of $W = 8c$ requests, the observation is right-censored: TIDE knows only that $d > W$. Dropping such examples would throw away the clearest evidence that an item was not worth keeping, so they are given the fixed label $\log(1 + 2W/c) = \log 17 \approx 2.83$, as if the item had returned after twice the window. Snapshots are taken for every scored candidate whatever the decision was, because the label depends only on when the item is requested next and not on what the cache did.
 
-Labelled examples go into a circular replay buffer of 32,768 rows. After every 32 new labels, the network takes one Adam step on a minibatch of 256 rows drawn uniformly at random from the buffer. This is the experience replay mechanism introduced for reinforcement learning agents~\cite{lin1992}, used here for the same reason: sampling at random breaks the strong correlation between consecutive requests and keeps gradient estimates stable. The finite buffer also acts as a sliding memory. Old examples are overwritten, so patterns from an earlier phase of the workload fade out of the training set as new ones arrive. Training every 32 labels rather than every request limits its share of the running time.
+Labelled examples go into a circular replay buffer of 32,768 rows. After every 32 new labels, the network takes one Adam step on a minibatch of 256 rows drawn uniformly at random from the buffer. This is the experience replay mechanism introduced for reinforcement learning agents~\cite{lin1992}, used here for the same reason: sampling at random breaks the strong correlation between consecutive requests and keeps gradient estimates stable. The finite buffer also acts as a sliding memory. Old examples are overwritten, so patterns from an earlier phase of the workload fade out of the training set as new ones arrive.
 
 The network is not used to make decisions until at least $W$ requests have been seen and at least 2,048 labels have been collected. Until then every decision is ARC's, and the network only takes over once it has seen enough outcomes to have learned a meaningful mapping from features to reuse distance.
 
@@ -250,13 +254,22 @@ TIDE removes the candidate with the highest score, with one condition: any candi
 
 \subsection{Fallback}
 
-A second copy of ARC, the shadow, sees the same requests and keeps only keys. TIDE counts its misses and the shadow's misses over windows of $\max(2000, 4c)$ requests. If TIDE misses more than $\max(10, 1\%)$ of the window more than the shadow, it stops using the network and lets ARC decide for a while. The pause starts at two windows and doubles after each repeated failure, up to 32 windows. A window in which TIDE is at least as good as the shadow reduces the failure count again. Training carries on during the pause, because labels do not depend on who made the decision. Table~\ref{tab:params} lists all settings. They were fixed before testing and are the same for every workload.
+A second copy of ARC, the shadow, sees the same requests and keeps only keys. TIDE counts its misses and the shadow's misses over windows of $\max(2000, 4c)$ requests. If TIDE misses more than $\max(10, 1\%)$ of the window more than the shadow, it stops using the network and lets ARC decide for a while. The pause starts at two windows and doubles after each repeated failure, up to 32 windows. A window in which TIDE is at least as good as the shadow reduces the failure count again. Training carries on during the pause, because labels do not depend on who made the decision.
+
+\subsection{Implementation and Asynchronous Training}
+\label{sec:impl}
+
+A first implementation in Python and NumPy spent most of its time outside the arithmetic: interpreter overhead in building feature rows, the fixed cost of calling into NumPy for a six-row batch, and an inline training step every 32 labels that stalled the request that triggered it. We rewrote the hot path with the Numba compiler~\cite{lam2015numba}, keeping the policy itself unchanged.
+
+\emph{Metadata as arrays.} Per-item history is stored in a preallocated array of nine floating-point values per item, with a missing gap marked as NaN, instead of one Python object per item. \emph{One compiled call per decision.} A single compiled function builds the feature rows of all candidates, which double as the label snapshots, and scores them, replacing six feature calls and a library call. \emph{Asynchronous training.} The request path only writes labels into the replay buffer and signals a background thread every 32 labels. The thread runs the Adam steps in compiled code that releases Python's global interpreter lock, on its own copy of the weights, and publishes each new copy with a single reference swap. Decisions therefore never wait for training and never see half-updated weights. The thread runs its whole backlog of steps in one compiled call: re-acquiring the interpreter lock after every step would cost up to one interpreter switch interval while the request thread is busy, and in a first version this starved the trainer, which completed less than a tenth of the intended steps.
+
+A synchronous mode, which trains inline exactly when the original does, is kept for reproducible experiments. Its hit rates match the NumPy reference within 0.3 points in our tests, and its compiled Adam step matches the NumPy step to within $10^{-7}$. Table~\ref{tab:params} lists all settings. They were fixed before testing and are the same for every workload.
 
 \begin{table}[htbp]
 \centering
 \caption{Design settings, fixed in advance for all workloads.}
 \label{tab:params}
-\begin{tabular}{L{3.8cm}L{2.5cm}L{4.4cm}}
+\begin{tabular}{L{3.8cm}L{2.7cm}L{4.2cm}}
 \toprule
 Setting & Value & Reason \\
 \midrule
@@ -268,6 +281,7 @@ Label window $W$ & $8c$ & Covers several cache turnovers \\
 Replay buffer & 32,768 rows & Old patterns fade out \\
 Training step & Every 32 labels & Limits training time \\
 Batch size & 256 & Stable updates \\
+Training thread & Background, double-buffered weights & Never blocks a request \\
 Margins & 0.1 and 0.2 & Network must be clearly better \\
 Start after & $W$ requests, 2,048 labels & No untrained decisions \\
 Fallback window & $\max(2000, 4c)$ & Enough requests to compare \\
@@ -287,14 +301,12 @@ Every scored candidate gets exactly one label within $W$ requests. The label dep
 
 \subsection{Cost Stays Fixed}
 
-A hit does not use the network at all. A miss runs one forward pass over at most six candidates, which costs $6 \times (12 \cdot 64 + 64) \approx 5{,}000$ multiply and add operations. A training step, once every 32 labels, is a forward and backward pass over 256 rows, a few hundred thousand operations spread over at least 32 requests. The replay buffer takes about 1.7\,MB, and the network with its Adam state takes about 11\,kB, no matter how big the cache is. Only the per-item history grows with the cache, in the same way that ARC's ghost lists do. The cost of a decision therefore does not grow as the cache gets bigger.
+A hit does not use the network at all. A miss runs one forward pass over at most six candidates, which costs $6 \times (12 \cdot 64 + 64) \approx 5{,}000$ multiply and add operations. A training step, once every 32 labels, is a forward and backward pass over 256 rows, a few hundred thousand operations, and with asynchronous training it runs off the request path. The replay buffer takes about 1.7\,MB, and the network with its Adam state takes about 11\,kB, no matter how big the cache is. Only the per-item history grows with the cache, in the same way that ARC's ghost lists do.
 
 \subsection{Loops Longer Than the Cache}
 \label{sec:loops}
 
-Take a cache of $c$ items and a workload that requests keys $1$ to $L$ in order, over and over, with $c < L$. LRU always removes the item that is needed next, so it never hits. FIFO does the same, and so does ARC. Belady's rule removes the most recently used item, which is the one needed furthest ahead, and reaches a hit rate of $(c-1)/(L-1)$. A policy that keeps $c$ keys fixed and never stores the others does better, with a hit rate of $c/L$, and no policy can beat it because at least $L - c$ of the keys must miss in every round. For $c = 16$ and $L = 17$ these are 93.75\% and 94.1\%; for $c = 16$ and $L = 31$ they are 50.0\% and 51.6\%.
-
-TIDE has both of the moves needed here. It can remove the newest item, which is what Belady's rule does, and it can skip storing the requested item, which is what the bypass policy does. ARC can do neither.
+Take a cache of $c$ items and a workload that requests keys $1$ to $L$ in order, over and over, with $c < L$. LRU always removes the item that is needed next, so it never hits. FIFO does the same, and so does ARC. Belady's rule removes the most recently used item, which is the one needed furthest ahead, and reaches a hit rate of $(c-1)/(L-1)$. A policy that keeps $c$ keys fixed and never stores the others does better, with a hit rate of $c/L$, and no policy can beat it because at least $L - c$ of the keys must miss in every round. For $c = 16$ and $L = 31$ these are 50.0\% and 51.6\%. TIDE has both of the moves needed here: it can remove the newest item, as Belady's rule does, and it can bypass the requested item. ARC can do neither.
 
 \subsection{When There Is Nothing to Learn}
 
@@ -302,55 +314,59 @@ If every request is picked at random from $N$ equally likely items, the chance o
 
 \subsection{How Far It Can Fall Behind ARC}
 
-The fallback limits how much worse than ARC TIDE can be over a long run. Suppose the network keeps failing. After a few failures, each window in which the network is used is followed by 32 windows in which ARC decides, so at most about one window in 33 is lost. That caps the long run loss at about 3\% of ARC's hits. A workload that switches back and forth between fooling the network and suiting it perfectly could push the loss up to about a quarter of ARC's hits, because a single good window resets the pause. Requiring several good windows in a row before trusting the network again would close this gap. Both figures assume that once ARC is back in control, the two caches quickly end up holding similar items.
+The fallback limits how much worse than ARC TIDE can be over a long run. Suppose the network keeps failing. After a few failures, each window in which the network is used is followed by 32 windows in which ARC decides, so at most about one window in 33 is lost. That caps the long run loss at about 3\% of ARC's hits. A workload that switches back and forth between fooling the network and suiting it perfectly could push the loss up to about a quarter of ARC's hits, because a single good window resets the pause. Both figures assume that once ARC is back in control, the two caches quickly end up holding similar items.
 
 \section{Experimental Evaluation}
 \label{sec:eval}
 
 \subsection{Setup}
 
-Table~\ref{tab:setup} summarises the setup. The twelve smaller traces cover fixed-popularity workloads (uniform, Gaussian, five Zipf skews, and a Zipf trace of 100,000 requests), a synthetic web trace, bursty and periodic traffic, and an adversarial trace that loops over 31 keys. The three larger traces were built to contain structure that changes over time: in \emph{lifecycle}, items are born at random times and their popularity rises and decays; in \emph{cycle}, 40 groups of 100 keys recur in a fixed rotating order, one group every 4,000 requests, over 30\% Zipf background noise; in \emph{phases}, each round runs one Zipf mix, a one-time scan, a loop sized to thrash a 1\% cache and a second, permuted Zipf mix. Where a small trace rounds two sizes to the same $c$, that setting is counted once, which gives 43 settings in total.
+\emph{Synthetic workloads.} Twelve generators produce traces of 100,000 requests: uniform, Gaussian, five Zipf skews, an unbounded Zipf trace, a web trace whose hot set drifts, bursty and periodic traffic, and an adversarial loop over 31 keys. Three more produce 500,000-request traces with structure that changes over time: in \emph{lifecycle}, items are born at random times and their popularity rises and decays; in \emph{cycle}, 40 groups of 100 keys recur in a fixed rotating order over 30\% Zipf background noise; in \emph{phases}, each round runs one Zipf mix, a one-time scan, a loop sized to thrash a 1\% cache and a second, permuted Zipf mix. Every generator is seeded, and we run two independent instances of each.
 
-Results are reported as the normalised hit rate $(r - r_\mathrm{LRU})/(r_\mathrm{Belady} - r_\mathrm{LRU})$, averaged over the 42 settings in which Belady's rule beats LRU by more than half a point. We also report the \emph{oracle}: TIDE's own candidates and decision rule, but scored with the true reuse distance instead of the network. The gap between TIDE and the oracle measures what the network fails to learn; the gap between the oracle and Belady's rule measures what the choice of candidates gives up.
+\emph{Real traces.} We use the first million requests of three production traces from the public libCacheSim collection~\cite{libcachesim} (Table~\ref{tab:real-traces}), one per domain: block storage from Microsoft Research Cambridge~\cite{narayanan2008}, an in-memory key-value cluster from Twitter~\cite{yang2020twitter}, and a CDN trace from Meta. The Twitter cluster was chosen by a rule fixed in advance: the smallest of the published clusters whose gap between Belady's rule and LRU at a 1\% cache is at least two points. Two smaller clusters were skipped because no policy could improve on LRU there. Object sizes are ignored and we report object hit rate.
 
 \begin{table}[htbp]
 \centering
-\caption{Experimental setup.}
-\label{tab:setup}
-\begin{tabular}{L{2.4cm}L{8.3cm}}
+\caption{Real traces (first $10^6$ requests of each).}
+\label{tab:real-traces}
+\begin{tabular}{llr}
 \toprule
-Item & Setting \\
+Trace & Domain & Distinct keys \\
 \midrule
-Workloads & 12 traces of 100,000 requests and 3 trend traces of 1,000,000 requests \\
-Cache sizes & 0.1\%, 1\% and 10\% of the distinct keys, at least 16 \\
-Baselines & LRU, LFU, ARC, S3-FIFO and SIEVE \\
-Reference points & Belady's rule, and the TIDE oracle \\
-Repeats & TIDE averaged over 3 network seeds \\
-Measures & Normalised hit rate, settings won, change against ARC, decision time, training time \\
-Implementation & Python and NumPy, one CPU core per run \\
+MSR hm\_0 & Block storage & 155,601 \\
+Twitter cluster 50 & In-memory key-value & 109,456 \\
+Meta CDN reag & Content delivery & 381,431 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Results}
+\emph{Policies.} LRU, LFU, ARC, S3-FIFO and SIEVE are our own implementations. LIRS and the learned policies LeCaR, CACHEUS and LRB are the reference implementations from libCacheSim~\cite{libcachesim}, driven one request at a time with unit sizes. To check that the two sets of implementations agree, we ran our LRU, ARC, S3-FIFO and SIEVE against libCacheSim's on the same Zipf trace: LRU and ARC matched exactly, S3-FIFO within 0.02 points and SIEVE within 0.16 points. GL-Cache was left out because it manages space in segments of bytes and does not work with unit-size objects. As references we report Belady's rule and the \emph{oracle}: TIDE's own candidates and decision rule, but scored with the true reuse distance instead of the network.
 
-Table~\ref{tab:summary} gives the overall ranking. TIDE has the best mean normalised hit rate and the best hit rate in 24 of the 43 settings, and it is at least as good as ARC in 34. Figure~\ref{fig:gain} shows where its gains come from.
+\emph{Sizes, repeats and statistics.} Cache sizes are 0.1\%, 1\% and 10\% of the distinct keys in each trace, at least 16. TIDE runs with three network seeds per trace instance; baselines are deterministic. Results are reported as the normalised hit rate $(r - r_\mathrm{LRU})/(r_\mathrm{Belady} - r_\mathrm{LRU})$, averaged over the settings in which Belady's rule beats LRU by more than half a point. Intervals are 95\% intervals from a hierarchical bootstrap that resamples generator instances within each setting and TIDE seeds within each instance. They measure run-to-run noise for this set of workloads, not how the results would carry over to other workloads. All hit-rate experiments use the synchronous mode, which is reproducible.
+
+\subsection{Synthetic Workloads}
+
+Table~\ref{tab:summary} gives the ranking over the 43 trace and size settings (86 cells with two instances each). TIDE has the best mean normalised hit rate, and its mean hit rate is 2.19 points above ARC, 1.89 above S3-FIFO and 1.79 above CACHEUS, with intervals well clear of zero. The strongest competitor on raw hit rate is LIRS, 0.45 points behind. TIDE is at least as good as ARC in 31 of the 43 settings, and its worst setting, bursty traffic at 10\%, costs 0.32 points. Figure~\ref{fig:gain} shows where the gains come from.
 
 \begin{table}[htbp]
 \centering
-\caption{Overall ranking across all 43 settings. Wins count settings in which a policy has the highest hit rate of the six.}
+\caption{Ranking on the synthetic workloads. Wins count cells in which a policy has the highest hit rate (ties count for every tied policy). Brackets are 95\% bootstrap intervals.}
 \label{tab:summary}
-\setlength{\tabcolsep}{9pt}
-\begin{tabular}{lrrr}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrr}
 \toprule
-Policy & Normalised & Wins & Mean hit rate (\%) \\
+Policy & Normalised & Hit \% & Wins & TIDE $-$ policy (points) \\
 \midrule
-TIDE & \textbf{0.379} & \textbf{24} & \textbf{46.09} \\
-S3-FIFO & 0.334 & 11 & 44.00 \\
-ARC & 0.306 & 3 & 43.36 \\
-SIEVE & 0.277 & 2 & 42.92 \\
-LRU & 0.000 & 1 & 38.85 \\
-LFU & $-$0.257 & 2 & 35.24 \\
+TIDE & \textbf{0.368} [0.363, 0.372] & \textbf{44.85} & \textbf{28} & --- \\
+ARC & 0.305 & 42.66 & 6 & +2.19 [+2.12, +2.26] \\
+CACHEUS & 0.296 & 43.06 & 9 & +1.79 [+1.70, +1.88] \\
+S3-FIFO & 0.282 & 42.97 & 18 & +1.89 [+1.82, +1.96] \\
+LIRS & 0.262 & 44.40 & 10 & +0.45 [+0.38, +0.52] \\
+SIEVE & 0.228 & 42.23 & 6 & +2.62 [+2.54, +2.69] \\
+LeCaR & 0.053 & 38.86 & 4 & +6.00 [+5.92, +6.07] \\
+LRB & 0.038 & 38.71 & 3 & +6.14 [+6.07, +6.21] \\
+LRU & 0.000 & 38.04 & 3 & +6.81 [+6.74, +6.88] \\
+LFU & $-$1.235 & 35.01 & 6 & +9.85 [+9.72, +9.97] \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -359,86 +375,150 @@ LFU & $-$0.257 & 2 & 35.24 \\
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  xbar, width=0.74\textwidth, height=7.2cm,
+  xbar, width=0.72\textwidth, height=7.2cm,
   bar width=5pt,
-  xmin=-1, xmax=13,
+  xmin=-1.5, xmax=13,
   xlabel={Mean hit rate gain of TIDE over ARC (points)},
-  symbolic y coords={bursty,uniform,web,gaussian,lifecycle,periodic,zipf-100k,zipf-a0.5,zipf-a1.2,zipf-a1.5,zipf-a0.8,zipf-a1.0,phases,cycle,adversarial},
+  symbolic y coords={bursty,uniform,web,gaussian,periodic,lifecycle,zipf-100k,zipf-a1.2,zipf-a0.5,zipf-a1.5,zipf-a0.8,zipf-a1.0,phases,cycle,adversarial},
   ytick=data, yticklabel style={font=\scriptsize}, xticklabel style={font=\scriptsize},
   xlabel style={font=\small},
   xmajorgrids, grid style={gray!25},
   enlarge y limits=0.04,
   clip=false,
 ]
-\addplot[fill=blue!35, draw=blue!60!black] coordinates {
-  (-0.23,bursty) (0.01,uniform) (0.29,web) (0.33,gaussian) (0.38,lifecycle) (0.41,periodic)
-  (0.74,zipf-100k) (0.85,zipf-a0.5) (0.91,zipf-a1.2) (1.06,zipf-a1.5) (1.23,zipf-a0.8)
-  (1.32,zipf-a1.0) (3.82,phases) (11.75,cycle) (13,adversarial)};
+\addplot[fill=blue!35, draw=blue!60!black, error bars/.cd, x dir=both, x explicit, error bar style={black}] coordinates {
+  (-0.18,bursty) +- (0.13,0) (-0.03,uniform) +- (0.09,0) (0.26,web) +- (0.52,0) (0.37,gaussian) +- (0.66,0)
+  (0.39,periodic) +- (0.61,0) (0.45,lifecycle) +- (0.81,0) (0.70,zipf-100k) +- (0.71,0) (0.94,zipf-a1.2) +- (0.79,0)
+  (0.96,zipf-a0.5) +- (0.95,0) (1.11,zipf-a1.5) +- (0.94,0) (1.18,zipf-a0.8) +- (0.28,0) (1.29,zipf-a1.0) +- (0.62,0)
+  (1.61,phases) +- (2.10,0) (6.17,cycle) +- (9.97,0) (13,adversarial) +- (0,0)};
 \node[right, font=\scriptsize] at (axis cs:13,adversarial) {+48.6 (clipped)};
 \end{axis}
 \end{tikzpicture}
-\caption{Gain of TIDE over ARC per trace, averaged over the three cache sizes. Workloads with structure over time (adversarial, cycle, phases) gain the most; fixed-popularity workloads gain about a point or less.}
+\caption{Gain of TIDE over ARC per synthetic trace, averaged over three cache sizes and two instances, with 95\% intervals over those six settings. The wide intervals on cycle and phases reflect how much the gain depends on cache size.}
 \label{fig:gain}
 \end{figure}
 
-Table~\ref{tab:cells} shows selected settings. On the adversarial loop, every recency-based policy gets no hits at all, while TIDE reaches 48.55\%, close to Belady's 49.99\%. The oracle reaches 51.60\%, which is exactly the $c/L = 16/31$ bound of Sect.~\ref{sec:loops}, because it can bypass. On \emph{cycle} at 10\%, the cache can finally hold about one group, and the network learns the 4,000-request period from the gap features: TIDE reaches 59.52\% against 25.04\% for ARC, a gain of 34.5 points, and matches the oracle's 59.54\%. On \emph{phases} at 1\%, where the embedded loop thrashes ARC, TIDE gains 10.6 points. On fixed-popularity traces the gains are small, as Sect.~\ref{sec:analysis} predicted, and on uniform traffic TIDE and ARC tie.
+Table~\ref{tab:cells} shows selected settings. On the adversarial loop, recency-based policies get no hits, while TIDE reaches 48.55\%, close to Belady's 49.99\%. The oracle reaches 51.60\%, exactly the $c/L = 16/31$ bound of Sect.~\ref{sec:loops}, because it can bypass. On \emph{cycle} at 10\%, TIDE learns the period from the gap features and gains 18.4 points over ARC. On \emph{phases} at 1\% it gains 4.1 points, but with a wide spread across seeds. The table also shows that TIDE is not the best policy everywhere. LIRS, whose signal is the gap between uses, is better on \emph{cycle} at 10\% (50.36\% against 42.71\%) and matches TIDE on the adversarial loop, and CACHEUS is better on \emph{phases} at 1\% (46.58\% against 40.87\%). TIDE wins on average because it is rarely far from the best, not because it wins every setting.
 
 \begin{table}[htbp]
 \centering
-\caption{Hit rate (\%) in selected settings. Size is the cache size as a share of distinct keys.}
+\caption{Hit rate (\%) in selected synthetic settings, mean over two instances; TIDE with a 95\% interval over instances and seeds. On the adversarial loop every size rounds to $c = 16$.}
 \label{tab:cells}
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lrrrrrrr}
+\setlength{\tabcolsep}{3pt}
+\scriptsize
+\begin{tabular}{lrrrrrrrrr}
 \toprule
-Trace & Size & LRU & ARC & S3-FIFO & TIDE & Oracle & Belady \\
+Trace & Size & LRU & ARC & S3-FIFO & LIRS & CACHEUS & TIDE & Oracle & Belady \\
 \midrule
-adversarial & 0.1\% & 0.00 & 0.00 & 0.00 & \textbf{48.55} & 51.60 & 49.99 \\
-cycle & 1\% & 16.13 & 22.87 & 22.76 & \textbf{23.50} & 23.61 & 25.27 \\
-cycle & 10\% & 21.65 & 25.04 & 40.35 & \textbf{59.52} & 59.54 & 67.99 \\
-phases & 1\% & 35.76 & 39.65 & 39.50 & \textbf{50.23} & 56.89 & 63.37 \\
-phases & 10\% & 73.09 & 72.93 & \textbf{73.27} & 72.39 & 74.15 & 77.96 \\
-zipf-100k & 1\% & 59.75 & 67.63 & 67.73 & \textbf{67.97} & 68.59 & 71.70 \\
-uniform & 1\% & 1.01 & 1.04 & \textbf{1.05} & 1.04 & 8.53 & 13.14 \\
-bursty & 10\% & 85.70 & \textbf{85.72} & 85.71 & 85.34 & 87.25 & 89.44 \\
+adversarial & -- & 0.00 & 0.00 & 0.00 & 48.38 & 0.00 & \textbf{48.55}\,$\pm$\,1.94 & 51.60 & 49.99 \\
+cycle & 1\% & 15.03 & 22.05 & 21.92 & \textbf{22.22} & 21.26 & 21.93\,$\pm$\,0.25 & 22.25 & 23.72 \\
+cycle & 10\% & 20.87 & 24.29 & 24.15 & \textbf{50.36} & 41.57 & 42.71\,$\pm$\,0.88 & 43.71 & 53.21 \\
+phases & 1\% & 32.57 & 36.77 & 36.50 & 36.79 & \textbf{46.58} & 40.87\,$\pm$\,3.60 & 53.12 & 60.44 \\
+phases & 10\% & 69.42 & 69.26 & \textbf{69.61} & 68.45 & 69.13 & 69.01\,$\pm$\,0.07 & 70.21 & 74.50 \\
+zipf-100k & 1\% & 59.43 & 67.28 & 67.35 & 67.45 & 67.48 & \textbf{67.57}\,$\pm$\,0.03 & 68.19 & 71.26 \\
+uniform & 1\% & 1.01 & 1.00 & 1.01 & \textbf{1.03} & 0.98 & 1.02\,$\pm$\,0.04 & 8.56 & 13.17 \\
+bursty & 10\% & \textbf{85.52} & 85.51 & 85.50 & 85.51 & 85.47 & 85.19\,$\pm$\,0.24 & 87.04 & 89.36 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The worst setting is \emph{phases} at 10\%, where TIDE trails ARC by 0.54 points. There, ARC is already about five points from Belady's rule, little structure is left to learn, and the network's prediction noise costs slightly more than it gains. The fallback keeps this loss small. The mild loss on \emph{bursty} has the same cause.
+LeCaR and LRB stay close to LRU on the synthetic traces. For LRB this is expected: it needs a long request history before its model is trained, and these traces are short. On a three-million-request prefix of the Twitter trace, which we ran as a check, LRB was 2 to 5 points above LRU throughout.
 
-Table~\ref{tab:speed} reports speed. The median decision takes about 14 to 15\,$\mu$s and does not grow with the cache size, from $c = 50$ to $c = 2{,}018$. Training takes 19 to 27\% of the running time. TIDE runs 20 to 70 times slower than ARC in this prototype. Almost all of this gap is interpreter and library call overhead around the small amount of arithmetic of Sect.~\ref{sec:analysis}, not the arithmetic itself.
+\subsection{Real Traces}
+
+Table~\ref{tab:real} shows the results on the real traces, and here the picture changes. TIDE is at least as good as ARC in only one of the nine settings, and on average it trails ARC by 0.39 points [$-$0.43, $-$0.34]. It still beats S3-FIFO by 0.41 points [+0.36, +0.45], CACHEUS by 1.61, LRB by 2.24 and LIRS by 4.10, and it has the second-best mean normalised hit rate (0.113, against 0.179 for ARC). Its worst setting is the Meta CDN trace at 10\%, 1.13 points below ARC.
 
 \begin{table}[htbp]
 \centering
-\caption{Throughput and decision latency, measured serially in Python and NumPy. Latency covers features and inference; training is reported separately as a share of running time.}
+\caption{Hit rate (\%) on the real traces (first $10^6$ requests). Active is the share of requests on which TIDE's network, rather than ARC, made the decision.}
+\label{tab:real}
+\setlength{\tabcolsep}{2.5pt}
+\scriptsize
+\begin{tabular}{lrrrrrrrrrrr}
+\toprule
+Trace & Size & $c$ & ARC & S3-FIFO & LIRS & CACHEUS & LRB & TIDE & Oracle & Belady & Active \\
+\midrule
+MSR & 0.1\% & 156 & \textbf{54.77} & 54.74 & 53.97 & 51.84 & 52.77 & 54.65 & 57.02 & 59.64 & 61\% \\
+ & 1\% & 1,556 & 64.53 & 63.95 & 63.96 & 62.41 & 63.41 & \textbf{64.54} & 66.56 & 69.91 & 53\% \\
+ & 10\% & 15,560 & 74.08 & \textbf{74.22} & 73.85 & 72.52 & 71.68 & 73.76 & 74.25 & 79.20 & 35\% \\
+\midrule
+Twitter & 0.1\% & 109 & \textbf{24.74} & 16.13 & 1.30 & 24.73 & 11.11 & 24.50 & 26.44 & 31.72 & 70\% \\
+ & 1\% & 1,095 & 33.41 & \textbf{35.07} & 24.40 & 26.76 & 30.68 & 33.03 & 36.56 & 51.08 & 4\% \\
+ & 10\% & 10,946 & 65.62 & 65.69 & 65.31 & 63.30 & 65.67 & 64.83 & 66.42 & 81.03 & 23\% \\
+\midrule
+Meta & 0.1\% & 381 & \textbf{50.08} & 49.50 & 46.48 & 49.02 & 49.40 & 49.95 & 51.92 & 55.30 & 16\% \\
+ & 1\% & 3,814 & 54.42 & \textbf{55.02} & 52.97 & 53.23 & 53.60 & 54.07 & 55.57 & 59.91 & 8\% \\
+ & 10\% & 38,143 & 58.92 & \textbf{59.15} & 58.01 & 58.78 & 58.66 & 57.79 & 59.35 & 61.86 & 31\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two observations explain this. First, the oracle is on average only 1.5 points above ARC on these traces, so even perfect predictions within TIDE's candidate set would gain little: the structure that TIDE exploits on the synthetic traces, loops and periodic returns, is rare here. Second, the network was in control for only 4 to 70\% of requests. Whenever it fell behind the shadow ARC, the fallback handed control back, which is why the losses stay near a point rather than growing. The fallback therefore did its job, but the network did not learn a better rule than ARC's within a million requests. (On the Twitter trace at 10\%, LRU happens to beat every other policy, including ARC.)
+
+\subsection{Speed and Asynchronous Training}
+
+Table~\ref{tab:speed} reports the latency of every request, hits included, on the first 500,000 requests of each real trace at the 1\% cache size, measured one process at a time. Compiling the hot path lowers the 99th percentile from 133--219\,$\mu$s to 87--112\,$\mu$s, and moving training to the background thread lowers it further to 18--26\,$\mu$s. Before, the tail was set by the requests that triggered a training step. The median, 2.9--9.4\,$\mu$s, is dominated by Python bookkeeping around the network: the ARC lists, the shadow ARC and the label queue. Throughput is 1.2 to 2.2 times that of the NumPy version, but still 10 to 16 times below ARC.
+
+\begin{table}[htbp]
+\centering
+\caption{Per-request latency and throughput at the 1\% cache size.}
 \label{tab:speed}
 \setlength{\tabcolsep}{4pt}
-\begin{tabular}{lrrrrrr}
+\small
+\begin{tabular}{llrrrr}
 \toprule
-Trace & $c$ & ARC req/s & TIDE req/s & p50 ($\mu$s) & p99 ($\mu$s) & Training \% \\
+Trace & Implementation & Req/s & p50 ($\mu$s) & p99 ($\mu$s) & p99.9 ($\mu$s) \\
 \midrule
-zipf-100k & 185 & 3,995k & 110k & 14.6 & 22.9 & 21 \\
-web & 50 & 1,864k & 45k & 14.8 & 20.2 & 19 \\
-lifecycle & 708 & 3,709k & 123k & 15.2 & 30.0 & 20 \\
-cycle & 273 & 2,208k & 76k & 13.9 & 21.9 & 27 \\
-phases & 2,018 & 2,516k & 84k & 14.3 & 21.8 & 19 \\
+MSR & ARC & 2,487k & 0.16 & 1.0 & 3.1 \\
+ & TIDE, NumPy & 128k & 2.56 & 133.5 & 183.3 \\
+ & TIDE, Numba, inline training & 150k & 2.49 & 87.3 & 134.3 \\
+ & TIDE, Numba, async training & 155k & 2.90 & 25.8 & 64.1 \\
+\midrule
+Twitter & ARC & 1,099k & 0.79 & 1.8 & 4.3 \\
+ & TIDE, NumPy & 48k & 14.15 & 219.3 & 410.8 \\
+ & TIDE, Numba, inline training & 83k & 9.62 & 112.2 & 125.2 \\
+ & TIDE, Numba, async training & 108k & 9.43 & 20.8 & 58.2 \\
+\midrule
+Meta & ARC & 1,649k & 0.28 & 1.0 & 5.0 \\
+ & TIDE, NumPy & 81k & 7.16 & 186.8 & 221.9 \\
+ & TIDE, Numba, inline training & 122k & 4.99 & 95.9 & 110.6 \\
+ & TIDE, Numba, async training & 145k & 5.12 & 17.5 & 62.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Asynchronous training means decisions use weights that are slightly out of date. Table~\ref{tab:async} measures the cost at the 1\% size over three seeds. On four of five traces the hit rate changes by at most 0.17 points. On \emph{phases} it drops by 3.10 points, although the trainer completes as many steps as in synchronous mode. This trace switches regime abruptly, and learning the new regime quickly depends on fresh weights at exactly those moments.
+
+\begin{table}[htbp]
+\centering
+\caption{Hit-rate cost of asynchronous training (1\% cache size, mean over three seeds).}
+\label{tab:async}
+\begin{tabular}{lrrrr}
+\toprule
+Trace & Sync (\%) & Async (\%) & Change & Steps done \\
+\midrule
+cycle & 21.90 & 22.07 & +0.17 & 99\% \\
+phases & 40.72 & 37.63 & $-$3.10 & 104\% \\
+MSR & 64.54 & 64.44 & $-$0.10 & 100\% \\
+Twitter & 33.03 & 33.04 & +0.01 & 100\% \\
+Meta & 54.07 & 54.04 & $-$0.02 & 100\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Discussion}
 
-The results match the analysis. The network earns its keep in proportion to how much learnable structure a workload has: large gains where recency is misleading (loops and phase changes), about a point on skewed random traffic, and nothing on uniform traffic, where there is nothing to predict. The oracle column separates the two sources of shortfall. On \emph{cycle} and on the adversarial loop, TIDE is within 0.1 and 3.1 points of the oracle, so the network has learned nearly all that its candidates allow. On \emph{phases} at 1\% it is 6.7 points short of the oracle, which shows that relearning after each change of phase is the harder part of the problem. On uniform and Gaussian traffic, the oracle is far above TIDE only because it knows the future; no features of the past could close that gap.
+The results support the analysis where the analysis is specific. On loops, TIDE finds the moves ARC lacks and approaches Belady's rule. On uniform traffic, nothing can be learned and TIDE ties ARC. The fallback keeps losses near a point in every setting. The results also show the limits of the design. Its gains depend on structure that recurs within the label window, loops and periodic returns, and that structure was common in our synthetic workloads but rare in the real traces we tested, where the oracle itself is barely above ARC. Where such structure exists, simpler signals can capture it as well or better: LIRS on \emph{cycle}, CACHEUS on \emph{phases}. TIDE's advantage on the synthetic suite comes from being close to the best on most workloads at once, not from dominating any one of them.
 
 \section{Limitations}
 \label{sec:limits}
 
-The loss bound assumes that TIDE and the shadow quickly hold similar items once ARC is back in control, which is only roughly true. The design assumes that every item has the same size. Items that return after more than $W$ requests all get the same censored label, so the network cannot tell them apart. The candidates the network sees depend on its own earlier choices, so what it trains on may drift from what it is asked to judge. All settings are fixed in advance and are not tuned per workload. Training takes up to 27\% of the running time, more than we would like, and the Python prototype is 20 to 70 times slower than ARC; a compiled implementation of the feature extraction and the network is needed before the design can be used in a real cache. Finally, most of the workloads are synthetic, and TIDE was averaged over only three seeds.
+The experiments were run in a reduced configuration to fit a ten-minute budget: two instances per generator, three network seeds, 500,000-request trend traces and million-request prefixes of the real traces. Longer traces could favour both TIDE and LRB, which need long histories, and the real-trace intervals reflect only seed noise, since each trace has one instance. Three real traces cannot represent all production workloads, and object sizes were ignored. The loss bound assumes that TIDE and the shadow quickly hold similar items once ARC is back in control, which is only roughly true. Items that return after more than $W$ requests all get the same censored label, so the network cannot tell them apart. The candidates the network sees depend on its own earlier choices, so what it trains on may drift from what it is asked to judge. All settings are fixed in advance and not tuned per workload. Finally, even compiled, TIDE handles 10 to 16 times fewer requests per second than ARC, because much of its per-request work is still interpreted Python; a native implementation of the whole cache would be needed before production use.
 
 \section{Conclusion}
 \label{sec:conclusion}
 
-TIDE keeps ARC's choice of which list to shrink and hands the choice of which item to remove to a compact neural network, with the option of not caching a new item at all. The network regresses a scaled reuse distance, the quantity Belady's rule ranks by, and it is trained continually by backpropagation from labels that the request stream produces on its own, handled as delayed and censored observations and replayed through an experience buffer. It needs no offline data and no trial and error. The cost of each decision stays fixed, and a shadow copy of ARC limits how much the network can hurt. Across 43 settings, TIDE has the best mean normalised hit rate of six policies, gains up to 34.5 points over ARC where workloads have structure over time, and never trails ARC by more than 0.54 points. A compiled implementation, variable item sizes and real production traces are the natural next steps.
+TIDE keeps ARC's choice of which list to shrink and hands the choice of which item to remove to a compact neural network, with the option of not caching a new item at all. The network regresses a scaled reuse distance, the quantity Belady's rule ranks by, and is trained continually by backpropagation from labels that the request stream produces on its own, handled as delayed and censored observations, replayed through an experience buffer and applied by a background thread. On fifteen synthetic workloads it has the best mean normalised hit rate among eleven policies, including three learned ones, and it gains up to 48.6 points where recency is misleading. On three real traces it does not beat ARC, trailing it by 0.39 points, although it beats S3-FIFO and every learned baseline, and its fallback keeps every loss near a point. Asynchronous training brings the 99th-percentile latency down to about 20\,$\mu$s. Longer real traces, workloads with recurring structure, and a native implementation are the natural next steps.
 
 \bibliographystyle{spmpsci}
 \bibliography{references}

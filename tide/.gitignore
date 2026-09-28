@@ -21,3 +21,5 @@ __pycache__
 *.listing
 
 temp
+# downloaded real traces
+data/real/

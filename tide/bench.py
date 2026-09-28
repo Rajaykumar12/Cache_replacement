@@ -1,28 +1,37 @@
-"""Benchmark TIDE against LRU, LFU, ARC, S3-FIFO, SIEVE, Belady and the TIDE oracle.
+"""Benchmark TIDE against classic and learned baselines, Belady and the TIDE oracle.
 
-  python3 bench.py                 # full suite: 12 CSV traces + 3 x 1M-request trend traces, 3 cache sizes
-  python3 bench.py --quick         # trend traces at 200k requests
-  python3 bench.py --seeds 3       # TIDE over 3 seeds
-  python3 bench.py --only cycle,phases
-Writes bench_results.csv and bench_curves.csv (windowed hit rate of TIDE vs ARC).
+Configuration behind the published results (about 10 minutes on 12 cores):
+  python3 bench.py --set synth --seeds 3 --instances 2 --trend-n 500000 --workers 11   # -> bench_results_synth.csv
+  python3 bench.py --set real --seeds 3 --real-n 1000000 --workers 11                  # -> bench_results_real.csv
+  python3 bench.py --latency --latency-n 500000                                        # -> bench_speed.csv
+  python3 bench.py --async-hits --seeds 3 --trend-n 500000 --real-n 1000000 --workers 5  # -> bench_async.csv
+The full-scale run (--seeds 5 --instances 3, 1M trend traces, 10M real requests with --workers 3 for RAM) takes
+about 2.5 hours; --quick shortens the trend traces to 200k requests for smoke tests.
+TIDE runs on TideFast (train='sync'), which test_tide.py checks against the reference tide.Tide.
 """
 import argparse
 import csv
 import os
 import time
+from array import array
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-from policies import ARC, LFU, LRU, S3FIFO, SIEVE, LFUPerfect, belady, next_use
-from tide import Tide, TideOracle
-from traces import SUITE, TREND
+import traces
+from policies import ARC, LFU, LRU, S3FIFO, SIEVE, LFUPerfect, LibCS, belady, next_use
+from tide import Tide
+from tide_fast import TideFast, TideOracleFast
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 FRACS = (0.001, 0.01, 0.1)
-BASE = {'LRU': LRU, 'LFU': LFU, 'LFU*': LFUPerfect, 'ARC': ARC, 'S3-FIFO': S3FIFO, 'SIEVE': SIEVE}
-HEAD = ['LRU', 'LFU', 'ARC', 'S3-FIFO', 'SIEVE', 'TIDE']  # contenders; LFU* (global counts) is info-only
+LEARNED = ('LIRS', 'LeCaR', 'Cacheus', 'LRB')  # libCacheSim reference implementations
+BASE = {'LRU': LRU, 'LFU': LFU, 'LFU*': LFUPerfect, 'ARC': ARC, 'S3-FIFO': S3FIFO, 'SIEVE': SIEVE,
+        **{n: (lambda c, n=n: LibCS(n, c)) for n in LEARNED}}
+HEAD = ['LRU', 'LFU', 'ARC', 'S3-FIFO', 'SIEVE', *LEARNED, 'TIDE']  # contenders; LFU* (global counts) is info-only
 WINDOWS = 100
+FIELDS = ['trace', 'inst', 'n', 'footprint', 'c', 'frac', 'policy', 'seed', 'hit', 'hit_1st', 'hit_2nd', 'req_per_s',
+          'p50_us', 'p99_us', 'train_share', 'override_pct', 'bypass_pct', 'active_pct']
 
 
 def run(policy, trace):
@@ -32,9 +41,9 @@ def run(policy, trace):
     return hits, time.perf_counter() - t0
 
 
-def rec(name, n, fp, c, f, pol, seed, hits, dt, t=None):
+def rec(name, inst, n, fp, c, f, pol, seed, hits, dt, t=None):
     h = np.frombuffer(bytes(hits), np.uint8)
-    r = dict(trace=name, n=n, footprint=fp, c=c, frac=f, policy=pol, seed=seed,
+    r = dict(trace=name, inst=inst, n=n, footprint=fp, c=c, frac=f, policy=pol, seed=seed,
              hit=100 * h.mean(), hit_1st=100 * h[:n // 2].mean(), hit_2nd=100 * h[n // 2:].mean(),
              req_per_s=n / dt if dt else '', p50_us='', p99_us='', train_share='', override_pct='', bypass_pct='', active_pct='')
     if t is not None:
@@ -47,112 +56,141 @@ def rec(name, n, fp, c, f, pol, seed, hits, dt, t=None):
 
 def curve(name, c, pol, hits):
     h = np.frombuffer(bytes(hits), np.uint8)
-    w = [100 * a.mean() for a in np.array_split(h, WINDOWS)]
-    return [dict(trace=name, c=c, policy=pol, window=i, hit=v) for i, v in enumerate(w)]
+    return [dict(trace=name, c=c, policy=pol, window=i, hit=100 * a.mean()) for i, a in enumerate(np.array_split(h, WINDOWS))]
 
 
-def cell(args):
-    name, f, n_trend, seeds = args
-    trace = SUITE[name](n_trend) if name in TREND else SUITE[name]()
+def job(args):
+    """One (trace, instance, size) and one policy: 'b:<baseline>', 'ref' (Belady + oracle) or a TIDE seed."""
+    name, inst, f, n_trend, n_real, what = args
+    trace = traces.make(name, inst, n_trend, n_real)
     n, fp = len(trace), len(set(trace))
     c = max(16, round(f * fp))
-    nxt = next_use(trace)
     out, curves = [], []
-    for pol, mk in BASE.items():
-        hits, dt = run(mk(c), trace)
-        out.append(rec(name, n, fp, c, f, pol, 0, hits, dt))
-        if pol == 'ARC': curves += curve(name, c, pol, hits)
-    out.append(rec(name, n, fp, c, f, 'Belady', 0, belady(trace, c, nxt), 0))
-    o = TideOracle(c, nxt)
-    hits, dt = run(o, trace)
-    out.append(rec(name, n, fp, c, f, 'TIDE-oracle', 0, hits, dt))
-    for s in range(seeds):
-        t = Tide(c, seed=s, record=True)
+    trend0 = name in traces.TREND and inst == 0
+    if what.startswith('b:'):
+        pol = what[2:]
+        hits, dt = run(BASE[pol](c), trace)
+        out.append(rec(name, inst, n, fp, c, f, pol, 0, hits, dt))
+        if pol == 'ARC' and trend0: curves += curve(name, c, pol, hits)
+    elif what == 'ref':
+        nxt = next_use(trace)
+        out.append(rec(name, inst, n, fp, c, f, 'Belady', 0, belady(trace, c, nxt), 0))
+        hits, dt = run(TideOracleFast(c, nxt), trace)
+        out.append(rec(name, inst, n, fp, c, f, 'TIDE-oracle', 0, hits, dt))
+    else:
+        seed = int(what)
+        t = TideFast(c, seed=seed, record=True)
         hits, dt = run(t, trace)
-        out.append(rec(name, n, fp, c, f, 'TIDE', s, hits, dt, t))
-        if s == 0: curves += curve(name, c, 'TIDE', hits)
+        out.append(rec(name, inst, n, fp, c, f, 'TIDE', seed, hits, dt, t))
+        if seed == 0 and trend0: curves += curve(name, c, 'TIDE', hits)
     return out, curves
 
 
-def summarize(rows):
-    cells = {}
-    for r in rows:
-        k = (r['trace'], r['c'])
-        cells.setdefault(k, {}).setdefault(r['policy'], []).append(r)
-    mean = lambda rs, key='hit': float(np.mean([r[key] for r in rs]))
-    print('\nHit rate (%) per cell; TIDE = mean over seeds, dARC = TIDE - ARC')
-    cols = HEAD + ['LFU*', 'TIDE-oracle', 'Belady']
-    print('%-18s %6s ' % ('trace', 'c') + ' '.join('%8s' % p[:8] for p in cols) + '    dARC')
-    norm = {p: [] for p in HEAD}
-    wins = {p: 0 for p in HEAD}
-    d_arc, gap_share, best_trend = [], [], {}
-    for (tr, c), P in cells.items():
-        h = {p: mean(P[p]) for p in cols}
-        d = h['TIDE'] - h['ARC']
-        d_arc.append((d, tr, c))
-        print('%-18s %6d ' % (tr, c) + ' '.join('%8.2f' % h[p] for p in cols) + '  %+6.2f' % d)
-        den = h['Belady'] - h['LRU']
-        if den > 0.5:
-            for p in HEAD: norm[p].append((h[p] - h['LRU']) / den)
-        wins[max(HEAD, key=lambda p: h[p])] += 1
-        if tr in TREND:
-            best_trend[tr] = max(best_trend.get(tr, -1e9), d)
-            if h['TIDE-oracle'] - h['ARC'] > 0.5: gap_share.append(d / (h['TIDE-oracle'] - h['ARC']))
-    tide = [r for r in rows if r['policy'] == 'TIDE']
-    ge = sum(d >= 0 for d, _, _ in d_arc)
-    worst = min(d_arc)
-    print('\nMean normalized hit rate (r - LRU)/(Belady - LRU) over %d cells:' % len(norm['TIDE']))
-    for p in sorted(HEAD, key=lambda p: -np.mean(norm[p])): print('  %-8s %.3f' % (p, np.mean(norm[p])))
-    print('Best policy per cell (wins):', wins)
-    print('TIDE >= ARC in %d/%d cells (%.0f%%); worst TIDE - ARC = %+.2f (%s, c=%d)' % (ge, len(d_arc), 100 * ge / len(d_arc), *worst))
-    print('Best TIDE - ARC per trend trace:', {k: round(v, 2) for k, v in best_trend.items()})
-    if gap_share: print('Share of the (oracle - ARC) gap realized on trend cells: %.0f%%' % (100 * np.mean(gap_share)))
-    for r in (r for r in tide if r['trace'] == 'phases' and r['seed'] == 0):
-        a = next(x for x in rows if x['trace'] == 'phases' and x['c'] == r['c'] and x['policy'] == 'ARC')
-        print('phases c=%d: TIDE - ARC round 1 %+.2f, round 2 %+.2f' % (r['c'], r['hit_1st'] - a['hit_1st'], r['hit_2nd'] - a['hit_2nd']))
+def write(fn, rows, fields=None):
+    with open(os.path.join(ROOT, fn), 'w', newline='') as fh:
+        w = csv.DictWriter(fh, fieldnames=fields or list(rows[0])); w.writeheader(); w.writerows(rows)
 
 
-def speed(names, n_trend):
-    """Serial pass (no CPU contention) at the 1% size: throughput, decision latency, training share."""
-    print('\nSpeed (serial, 1%% cache size)\n%-18s %7s %10s %10s %8s %8s %8s' % ('trace', 'c', 'ARC req/s', 'TIDE req/s', 'p50 us', 'p99 us', 'train %'))
+def suite(a):
+    names = a.only.split(',') if a.only else list(traces.REAL if a.set == 'real' else [*traces.TREND, *traces.SMALL])
+    n_trend = 200_000 if a.quick else a.trend_n
+    inst = 1 if a.set == 'real' else a.instances
+    heavy = lambda nm: nm in traces.REAL or nm in traces.TREND
+    jobs = [(nm, i, f, n_trend, a.real_n, w) for nm in names for i in range(inst) for f in FRACS
+            for w in (*(f'b:{p}' for p in BASE), 'ref', *map(str, range(a.seeds)))]
+    slow = lambda w: w == 'b:LRB' or not w.startswith('b:')
+    jobs.sort(key=lambda j: (not heavy(j[0]), not slow(j[5]), -j[2]))  # biggest first for better packing
+    rows, curves = [], []
+    t0 = time.time()
+    with ProcessPoolExecutor(a.workers) as ex:
+        for i, (r, cv) in enumerate(ex.map(job, jobs, chunksize=1)):
+            rows += r; curves += cv
+            print('\r%d/%d jobs, %.0fs' % (i + 1, len(jobs), time.time() - t0), end='', flush=True)
+    print()
+    write(f'bench_results_{a.set}.csv', rows, FIELDS)
+    if curves: write('bench_curves.csv', curves)
+    import analysis
+    analysis.summarize(a.set)
+
+
+# ---------- latency ----------
+def timed(policy, trace):
+    """Per-request latency (ns) of every access, plus throughput."""
+    lat, acc, ns = array('q', bytes(8 * len(trace))), policy.access, time.perf_counter_ns
+    t0 = time.perf_counter()
+    for i, x in enumerate(trace):
+        s = ns(); acc(x); lat[i] = ns() - s
+    return np.frombuffer(lat, np.int64) / 1e3, time.perf_counter() - t0
+
+
+def latency(a):
+    """Serial (one process at a time, no CPU contention), 1% cache size, first --latency-n requests of each trace."""
+    names = a.only.split(',') if a.only else list(traces.REAL)
     rows = []
+    print('%-12s %-11s %9s %8s %8s %9s %9s %8s' % ('trace', 'policy', 'req/s', 'p50 us', 'p99 us', 'p99.9 us', 'dec p99', 'train %'))
     for name in names:
-        trace = SUITE[name](n_trend) if name in TREND else SUITE[name]()
+        trace = traces.make(name, 0, a.trend_n, a.latency_n)[:a.latency_n]
         c = max(16, round(0.01 * len(set(trace))))
-        _, da = run(ARC(c), trace)
-        t = Tide(c, record=True)
-        _, dt = run(t, trace)
-        lat = np.array(t.lat) / 1e3
-        r = dict(trace=name, n=len(trace), c=c, arc_req_per_s=len(trace) / da, tide_req_per_s=len(trace) / dt,
-                 p50_us=np.percentile(lat, 50), p99_us=np.percentile(lat, 99), train_pct=100 * t.train_s / dt)
-        rows.append(r)
-        print('%-18s %7d %9.0fk %9.0fk %8.1f %8.1f %8.1f' % (name, c, r['arc_req_per_s'] / 1e3, r['tide_req_per_s'] / 1e3,
-              r['p50_us'], r['p99_us'], r['train_pct']))
-    with open(os.path.join(ROOT, 'bench_speed.csv'), 'w', newline='') as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+        TideFast(16).access(0)  # JIT warm-up outside the timed runs
+        for pol, mk in (('ARC', lambda: ARC(c)), ('TIDE-ref', lambda: Tide(c, record=True)),
+                        ('TIDE-fast', lambda: TideFast(c, record=True)), ('TIDE-async', lambda: TideFast(c, train='async', record=True))):
+            p = mk()
+            lat, dt = timed(p, trace)
+            if hasattr(p, 'close'): p.close()
+            dec = np.array(getattr(p, 'lat', None) or [0]) / 1e3
+            r = dict(trace=name, n=len(trace), c=c, policy=pol, req_per_s=len(trace) / dt,
+                     p50_us=np.percentile(lat, 50), p99_us=np.percentile(lat, 99), p999_us=np.percentile(lat, 99.9),
+                     dec_p50_us=np.percentile(dec, 50), dec_p99_us=np.percentile(dec, 99),
+                     train_pct=100 * getattr(p, 'train_s', 0) / dt, steps=getattr(p, 'n_steps', getattr(getattr(p, 'net', None), 'k', 0)))
+            rows.append(r)
+            print('%-12s %-11s %8.0fk %8.2f %8.2f %9.2f %9.2f %8.1f' % (name, pol, r['req_per_s'] / 1e3, r['p50_us'], r['p99_us'],
+                  r['p999_us'], r['dec_p99_us'], r['train_pct']), flush=True)
+    write('bench_speed.csv', rows)
+
+
+# ---------- async hit-rate cost ----------
+def async_job(args):
+    name, f, seed, n_trend, n_real = args
+    trace = traces.make(name, 0, n_trend, n_real)
+    c = max(16, round(f * len(set(trace))))
+    out = []
+    for mode in ('sync', 'async'):
+        t = TideFast(c, seed=seed, train=mode)
+        hits, _ = run(t, trace)
+        t.close()
+        out.append(dict(trace=name, c=c, frac=f, seed=seed, mode=mode, hit=100 * np.frombuffer(bytes(hits), np.uint8).mean(),
+                        steps=t.n_steps))
+    return out
+
+
+def async_hits(a):
+    names = a.only.split(',') if a.only else ['cycle', 'phases', *traces.REAL]
+    jobs = [(nm, f, s, a.trend_n, a.real_n) for nm in names for f in (0.01,) for s in range(a.seeds)]
+    rows = []
+    with ProcessPoolExecutor(a.workers) as ex:  # each job uses 2 threads in async mode
+        for i, r in enumerate(ex.map(async_job, jobs, chunksize=1)):
+            rows += r; print('\r%d/%d' % (i + 1, len(jobs)), end='', flush=True)
+    print()
+    write('bench_async.csv', rows)
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--set', choices=('synth', 'real'), default='synth')
     ap.add_argument('--quick', action='store_true')
-    ap.add_argument('--seeds', type=int, default=1)
+    ap.add_argument('--seeds', type=int, default=5)
+    ap.add_argument('--instances', type=int, default=3)
     ap.add_argument('--only', default='')
-    ap.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2) - 1))
+    ap.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2) - 2))
+    ap.add_argument('--trend-n', type=int, default=1_000_000, help='requests per trend trace')
+    ap.add_argument('--real-n', type=int, default=10_000_000, help='prefix of each real trace')
+    ap.add_argument('--latency-n', type=int, default=2_000_000, help='requests per trace in --latency')
+    ap.add_argument('--latency', action='store_true')
+    ap.add_argument('--async-hits', action='store_true')
     a = ap.parse_args()
-    names = a.only.split(',') if a.only else list(SUITE)
-    n_trend = 200_000 if a.quick else 1_000_000
-    jobs = sorted(((n, f, n_trend, a.seeds) for n in names for f in FRACS), key=lambda j: j[0] not in TREND)
-    rows, curves = [], []
-    t0 = time.time()
-    with ProcessPoolExecutor(a.workers) as ex:
-        for i, (r, cv) in enumerate(ex.map(cell, jobs, chunksize=1)):
-            rows += r; curves += cv
-            print('\r%d/%d cells, %.0fs' % (i + 1, len(jobs), time.time() - t0), end='', flush=True)
-    for fn, data in (('bench_results.csv', rows), ('bench_curves.csv', curves)):
-        with open(os.path.join(ROOT, fn), 'w', newline='') as fh:
-            w = csv.DictWriter(fh, fieldnames=list(data[0])); w.writeheader(); w.writerows(data)
-    summarize(rows)
-    speed([n for n in names if n in TREND or n in ('zipf_100k', 'web_traffic_100k')], n_trend)
+    if a.latency: latency(a)
+    elif a.async_hits: async_hits(a)
+    else: suite(a)
 
 
 if __name__ == '__main__':

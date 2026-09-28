@@ -154,6 +154,22 @@ class SIEVE:
         return False
 
 
+class LibCS:
+    """A libCacheSim reference implementation (LIRS, LeCaR, Cacheus, LRB, ...) behind access(key) -> bool.
+    Unit object sizes; clock_time = request index."""
+
+    def __init__(s, name, c):
+        import libcachesim as lcs
+        s.cache, s.r, s.t = getattr(lcs, name)(cache_size=c), lcs.Request(), 0
+        s.r.obj_size = 1
+        s.get = s.cache.get
+
+    def access(s, x):
+        r = s.r
+        r.obj_id = x; r.clock_time = s.t; s.t += 1
+        return s.get(r)
+
+
 def next_use(trace):
     """nxt[i] = index of the next request for trace[i], or len(trace) + 10**9 if none."""
     n, last = len(trace), {}

@@ -6,25 +6,25 @@
 \usepackage{pgfplots}
 \usepackage{pgfplotstable}
 \usepgfplotslibrary{groupplots}
-\pgfplotsset{compat=1.18}
+\pgfplotsset{compat=1.17}
 \usepackage{float}
 \usepackage[hidelinks]{hyperref}
 \input{gen/macros.tex}
 \input{gen/curve_caps.tex}
 
 \definecolor{cLRU}{HTML}{9E9E9E}
-\definecolor{cLFU}{HTML}{8D6E63}
 \definecolor{cARC}{HTML}{1E88E5}
 \definecolor{cS3}{HTML}{43A047}
-\definecolor{cSIEVE}{HTML}{FB8C00}
+\definecolor{cLIRS}{HTML}{8E24AA}
+\definecolor{cCAC}{HTML}{FB8C00}
 \definecolor{cTIDE}{HTML}{D81B60}
 \pgfplotsset{
   every axis/.append style={font=\footnotesize, grid=major, grid style={gray!20}},
   pLRU/.style={cLRU, thick, mark=*, mark size=1.2pt},
-  pLFU/.style={cLFU, thick, mark=square*, mark size=1.2pt},
   pARC/.style={cARC, thick, mark=triangle*, mark size=1.6pt},
   pS3/.style={cS3, thick, mark=diamond*, mark size=1.6pt},
-  pSIEVE/.style={cSIEVE, thick, mark=pentagon*, mark size=1.4pt},
+  pLIRS/.style={cLIRS, thick, mark=square*, mark size=1.2pt},
+  pCAC/.style={cCAC, thick, mark=pentagon*, mark size=1.4pt},
   pTIDE/.style={cTIDE, very thick, mark=star, mark size=2pt},
   pBEL/.style={black, dashed, thin},
 }
@@ -37,79 +37,33 @@
 \maketitle
 
 \section*{Summary}
-TIDE is an ARC cache in which a small neural network, trained online, chooses which item to evict.
-ARC's own rule picks the list to evict from. A $12\to64\to1$ MLP, written in pure NumPy, then scores
-that list's 4 least-recently-used keys, its most-recently-used key, and the incoming key. Choosing the
-incoming key means it is not cached at all (bypass). The network predicts
-$\log(1+d/c)$, where $d$ is the time until the key is requested again and $c$ is the cache size.
-Every scored key gets its true $d$ as a training label when it is next requested, or a censored label
-after $W=8c$ requests, so the model keeps learning as the cache runs. A shadow copy of plain ARC runs
-alongside; whenever TIDE falls behind it, TIDE hands decisions back to ARC.
+TIDE is an ARC cache in which a $12\to64\to1$ MLP, trained online from delayed reuse-distance labels, picks the victim
+among ARC's chosen list's 4 LRU keys, its MRU key and (on a new-key miss) the incoming key. A shadow ARC hands control
+back when TIDE falls behind. This run compares it with LRU, LFU, ARC, S3-FIFO, SIEVE, LIRS and three learned policies
+(LeCaR, Cacheus, LRB; libCacheSim reference implementations) on synthetic and real traces.
 
 \begin{itemize}
-  \item \textbf{Best overall hit rate.} Mean normalized hit rate is \NormTIDE{} for TIDE, against \NormSthree{} for S3-FIFO,
-        \NormARC{} for ARC and \NormLFU{} for LFU. Normalized hit rate is $(r-r_{\mathrm{LRU}})/(r_{\mathrm{Belady}}-r_{\mathrm{LRU}})$
-        averaged over \NNorm{} cells: 0 means no better than LRU, 1 means as good as the offline optimum.
-        TIDE has the highest hit rate in \WinsTIDE{} of \NCells{} cells.
-  \item \textbf{Close to ARC's floor.} TIDE $\ge$ ARC in \GeARC{} of \NCells{} cells. Its worst cell is \Worst{} points (\WorstCell).
-  \item \textbf{Trend workloads, best gain over ARC:} cycle \GainCycle, phases \GainPhases, lifecycle \GainLifecycle{} points.
-        The adversarial loop gains \AdvGain{} points. TIDE realizes \GapShare\% of the gap between ARC and the TIDE oracle on the trend traces.
-  \item \textbf{Fast.} A decision takes a median of \PFifty{}\,\textmu s at p50 and at most \PNineNineMax{}\,\textmu s at p99.
-        Throughput is \RpsMin k--\RpsMax k requests/s, and hits never call the model.
+  \item \textbf{Synthetic traces} (\NGroupsSynth{} trace/size groups, \Instances{} generator instances, \Seeds{} TIDE seeds):
+        TIDE ranks \#\RankSynthTIDE{} with mean normalised hit rate \NormSynthTIDE{}, against \NormSynthARC{} (ARC),
+        \NormSynthCacheus{} (Cacheus), \NormSynthSthreeFIFO{} (S3-FIFO) and \NormSynthLIRS{} (LIRS).
+        Its mean hit rate is \DSynthARC{} points above ARC \DSynthARCCI, \DSynthSthree{} above S3-FIFO \DSynthSthreeCI{}
+        and \DSynthLIRS{} above LIRS \DSynthLIRSCI.
+  \item \textbf{Real traces} (MSR, Twitter, Meta CDN; first \RealN{} requests each): TIDE ranks \#\RankRealTIDE.
+        Its mean hit rate is \DRealARC{} points against ARC \DRealARCCI{} and \DRealSthree{} against S3-FIFO \DRealSthreeCI.
+        TIDE is at least as good as ARC in \GeARCReal{} of \NGroupsReal{} settings; worst \WorstReal{} (\WorstCellReal).
+        The model was active for only \ActiveRealMin--\ActiveRealMax\% of requests because the shadow-ARC fallback kept switching it off.
+  \item \textbf{Speed} (per request, 1\% cache): p99 falls from \PNineNineRef\,\textmu s (NumPy) to \PNineNineSync\,\textmu s (Numba, inline training)
+        and \PNineNineAsync\,\textmu s (Numba, asynchronous training); median \PFiftyAsync\,\textmu s against ARC's \PFiftyARC\,\textmu s.
+        Throughput is \SpeedupAsync$\times$ the NumPy version and still \SlowdownAsync$\times$ below ARC.
+  \item \textbf{Asynchronous training} costs at most \AsyncOthers{} points on four of five traces, but \AsyncWorst{} on \AsyncWorstTrace.
 \end{itemize}
 
-\section*{Setup}
-\textbf{Policies.} LRU; LFU (standard in-cache LFU, which forgets counts on eviction); ARC; S3-FIFO; SIEVE; TIDE
-(mean over \Seeds{} seeds); the \emph{TIDE oracle}, which has the same design but scores keys with the true next-request time,
-giving the design's ceiling; and Belady's MIN, the offline optimum. With bypass allowed, Belady is not a strict upper bound.
-
-\textbf{Traces.} \NTraces{} traces in total. There are 12 existing CSV traces of 100k requests: Zipf, web traffic with a drifting hot set, periodic, bursty,
-adversarial, Gaussian, uniform, and Zipf with $\alpha\in\{0.5,\dots,1.5\}$. There are also 3 generated 1M-request trend traces:
-\emph{lifecycle}, where items are born and their popularity rises then decays; \emph{cycle}, where 40 groups of 100 keys recur in a fixed
-order over a Zipf background; and \emph{phases}, which runs Zipf A, a scan, a loop and Zipf B, twice.
-Cache sizes are 0.1\%, 1\% and 10\% of each trace's distinct keys (minimum 16).
-
-\section*{Results}
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}
-\pgfplotstableread{gen/norm.dat}\normtab
-\begin{axis}[xbar, width=0.55\linewidth, height=5cm, bar width=9pt,
-  ytick=data, yticklabels from table={\normtab}{policy}, y dir=reverse,
-  xlabel={mean normalized hit rate (0 = LRU, 1 = Belady)}, xmin=-0.42, xmax=0.47,
-  nodes near coords, nodes near coords style={font=\tiny, /pgf/number format/fixed, /pgf/number format/precision=3},
-  enlarge y limits=0.12]
-\addplot[fill=cTIDE!70, draw=cTIDE] table[x=norm, y expr=\coordindex] {\normtab};
-\end{axis}
-\end{tikzpicture}
-\hfill
-\begin{minipage}[b]{0.4\linewidth}
-\centering\small
-\input{gen/tab_summary.tex}
-\vspace{1.2em}
-\end{minipage}
-\caption{Overall ranking across all cells. ``Wins'' counts the cells where the policy has the highest hit rate among the six contenders.}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}
-\pgfplotstableread{gen/delta.dat}\deltatab
-\begin{axis}[ybar=0pt, bar width=3pt, clip=false, width=\linewidth, height=6cm,
-  xtick=data, xticklabels from table={\deltatab}{trace}, xticklabel style={rotate=45, anchor=east, font=\scriptsize},
-  ylabel={TIDE $-$ ARC (hit-rate points)}, ymin=-1.5, ymax=12, enlarge x limits=0.03,
-  legend style={at={(0.99,0.97)}, anchor=north east, font=\scriptsize}, legend columns=3,
-  extra y ticks={0}, extra y tick style={grid style={black, thin}}]
-\addplot[fill=cARC!35, draw=cARC!60] table[x expr=\coordindex, y=s1] {\deltatab};
-\addplot[fill=cARC!70, draw=cARC] table[x expr=\coordindex, y=s2] {\deltatab};
-\addplot[fill=cTIDE!80, draw=cTIDE] table[x expr=\coordindex, y=s3] {\deltatab};
-\legend{0.1\% cache, 1\% cache, 10\% cache}
-\input{gen/delta_notes.tex}
-\end{axis}
-\end{tikzpicture}
-\caption{Gain of TIDE over ARC per trace and cache size. Bars above 12 points are clipped and labelled with their value.}
-\end{figure}
+\section*{Synthetic traces}
+\begin{table}[H]\centering\small
+\input{gen/tab_summary_synth.tex}
+\caption{Ranking on synthetic traces. Normalised hit rate is $(r-r_{\mathrm{LRU}})/(r_{\mathrm{Belady}}-r_{\mathrm{LRU}})$.
+Wins count cells with the best hit rate (ties count for every tied policy). Intervals are hierarchical bootstrap CIs over instances and seeds.}
+\end{table}
 
 \begin{figure}[H]
 \centering
@@ -118,32 +72,32 @@ Cache sizes are 0.1\%, 1\% and 10\% of each trace's distinct keys (minimum 16).
   xmode=log, xlabel={cache size (\% of keys)}, xtick={0.1,1,10}, xticklabels={0.1,1,10}]
 \nextgroupplot[title=lifecycle, ylabel={hit rate (\%)}]
 \addplot[pLRU] table[x=frac, y=LRU] {gen/size_lifecycle.dat};
-\addplot[pLFU] table[x=frac, y=LFU] {gen/size_lifecycle.dat};
 \addplot[pARC] table[x=frac, y=ARC] {gen/size_lifecycle.dat};
 \addplot[pS3] table[x=frac, y=S3FIFO] {gen/size_lifecycle.dat};
-\addplot[pSIEVE] table[x=frac, y=SIEVE] {gen/size_lifecycle.dat};
+\addplot[pLIRS] table[x=frac, y=LIRS] {gen/size_lifecycle.dat};
+\addplot[pCAC] table[x=frac, y=Cacheus] {gen/size_lifecycle.dat};
 \addplot[pTIDE] table[x=frac, y=TIDE] {gen/size_lifecycle.dat};
 \addplot[pBEL] table[x=frac, y=Belady] {gen/size_lifecycle.dat};
 \nextgroupplot[title=cycle]
 \addplot[pLRU] table[x=frac, y=LRU] {gen/size_cycle.dat};
-\addplot[pLFU] table[x=frac, y=LFU] {gen/size_cycle.dat};
 \addplot[pARC] table[x=frac, y=ARC] {gen/size_cycle.dat};
 \addplot[pS3] table[x=frac, y=S3FIFO] {gen/size_cycle.dat};
-\addplot[pSIEVE] table[x=frac, y=SIEVE] {gen/size_cycle.dat};
+\addplot[pLIRS] table[x=frac, y=LIRS] {gen/size_cycle.dat};
+\addplot[pCAC] table[x=frac, y=Cacheus] {gen/size_cycle.dat};
 \addplot[pTIDE] table[x=frac, y=TIDE] {gen/size_cycle.dat};
 \addplot[pBEL] table[x=frac, y=Belady] {gen/size_cycle.dat};
 \nextgroupplot[title=phases, legend style={at={(1.05,0.5)}, anchor=west, font=\scriptsize}]
 \addplot[pLRU] table[x=frac, y=LRU] {gen/size_phases.dat};
-\addplot[pLFU] table[x=frac, y=LFU] {gen/size_phases.dat};
 \addplot[pARC] table[x=frac, y=ARC] {gen/size_phases.dat};
 \addplot[pS3] table[x=frac, y=S3FIFO] {gen/size_phases.dat};
-\addplot[pSIEVE] table[x=frac, y=SIEVE] {gen/size_phases.dat};
+\addplot[pLIRS] table[x=frac, y=LIRS] {gen/size_phases.dat};
+\addplot[pCAC] table[x=frac, y=Cacheus] {gen/size_phases.dat};
 \addplot[pTIDE] table[x=frac, y=TIDE] {gen/size_phases.dat};
 \addplot[pBEL] table[x=frac, y=Belady] {gen/size_phases.dat};
-\legend{LRU, LFU, ARC, S3-FIFO, SIEVE, TIDE, Belady}
+\legend{LRU, ARC, S3-FIFO, LIRS, Cacheus, TIDE, Belady}
 \end{groupplot}
 \end{tikzpicture}
-\caption{Hit rate vs.\ cache size on the three 1M-request trend traces.}
+\caption{Hit rate against cache size on the trend traces (instance 0).}
 \end{figure}
 
 \begin{figure}[H]
@@ -163,34 +117,48 @@ Cache sizes are 0.1\%, 1\% and 10\% of each trace's distinct keys (minimum 16).
 \legend{ARC, TIDE}
 \end{groupplot}
 \end{tikzpicture}
-\caption{Learning live: hit rate over time for ARC and TIDE, at the cache size where TIDE gains most on each trend trace.
-TIDE starts out as plain ARC and switches to its model once it has $\ge$\,2048 labels and $t\ge W$.}
+\caption{Hit rate over time for ARC and TIDE (seed 0, instance 0) at the size where TIDE gains most on each trend trace.}
 \end{figure}
 
-\begin{table}[H]
-\centering\small
+\section*{Real traces}
+\begin{table}[H]\centering\small
+\input{gen/tab_realtraces.tex}
+\caption{Real traces (libCacheSim oracleGeneral collection), first requests only; unit object sizes, object hit rate.}
+\end{table}
+\begin{table}[H]\centering\small
+\input{gen/tab_summary_real.tex}
+\caption{Ranking on the real traces (one instance each; intervals reflect TIDE seed noise only).}
+\end{table}
+\begin{table}[H]\centering\scriptsize
+\input{gen/tab_real.tex}
+\caption{Hit rate (\%) on the real traces. Active\% is the share of requests on which TIDE's model, not ARC, made the decision.}
+\end{table}
+
+\section*{Speed and asynchronous training}
+\begin{table}[H]\centering\small
 \input{gen/tab_speed.tex}
-\caption{Speed, measured serially at the 1\% cache size in pure Python/NumPy. Latency is per eviction decision and covers
-features, label snapshot and inference; training steps are excluded. Training \% is the share of total runtime spent in
-online training.}
+\caption{Per-request latency of every access (hits included), measured serially at the 1\% cache size.}
+\end{table}
+\begin{table}[H]\centering\small
+\input{gen/tab_async.tex}
+\caption{Hit-rate cost of asynchronous training at the 1\% cache size (mean over seeds).}
 \end{table}
 
 \section*{Caveats}
 \begin{itemize}
-  \item LFU here is the standard in-cache LFU. An LFU with global, never-forgotten counts (unbounded metadata) beats TIDE on the i.i.d.\ Zipf traces;
-        it is in \texttt{bench\_results.csv} as \texttt{LFU*} and is left out of the contenders.
-  \item The trend generators and their parameters were written for this project and fixed before tuning; tuning used the same settings on every trace.
-        TIDE's settings ($\delta=0.1$ for tail keys, $0.2$ for MRU/bypass, one training step per 32 labels, 64 hidden units) come from a single sweep over all traces.
-  \item Pure Python runs 20--70$\times$ below plain ARC's raw throughput; a Numba or C hot path would close that.
-  \item TIDE missed some internal targets: worst cell $-0.54$ (target $\ge-0.5$), lifecycle gain $<1$ point, and training at about \TrainPct\% of runtime (target $\le 15\%$).
+  \item This is the reduced ($\approx$\,10-minute) configuration: 2 generator instances, 3 TIDE seeds, 500k-request trend traces
+        and 1M-request prefixes of the real traces. LRB in particular needs long histories and may be under-trained on short traces.
+  \item Confidence intervals measure run-to-run noise (instances and seeds) for this set of workloads, not how the results would generalise to other workloads.
+  \item Real traces are evaluated with unit object sizes (object hit rate); byte hit rate is not measured.
+  \item LFU is the standard in-cache LFU; \texttt{LFU*} (global counts, unbounded metadata) is recorded in the CSVs but left out.
 \end{itemize}
 
 \clearpage
 \begin{table}[H]
-\centering\footnotesize
+\centering\scriptsize
 \input{gen/tab_results.tex}
-\caption{Hit rate (\%) for every cell. Bold marks the best of the six contenders. Oracle is the TIDE oracle (true next-request scores);
-$\Delta$ARC is TIDE $-$ ARC. TIDE is the mean over \Seeds{} seeds.}
+\caption{Synthetic results per trace and size (mean over instances; TIDE with a 95\% t-interval over instances $\times$ seeds).
+Bold marks the best contender. Oracle is TIDE with true reuse distances; $\Delta$ARC is TIDE $-$ ARC.}
 \end{table}
 
 \end{document}

@@ -1,11 +1,16 @@
-"""Trace loading and trend-workload generators. Every trace is a list of int keys."""
+"""Trace generators and loaders. Every trace is a list of int keys.
+
+Synthetic generators take a seed, so each one yields independent instances (bench.py --instances). They are
+seeded ports of the project's original generators (../workload_generator.py, ../data_gen/*.py) with the same
+parameters. Real traces come from realtraces.py.
+"""
 import csv
-import glob
-import os
 
 import numpy as np
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+import realtraces
+
+N_SMALL, ITEMS = 100_000, 10_000  # original workload_generator.py settings
 
 
 def load_csv(path):
@@ -19,6 +24,67 @@ def _zipf(rng, n, n_items, alpha):
     return rng.choice(n_items, size=n, p=w / w.sum())
 
 
+# ---------- small synthetic workloads (100k requests) ----------
+def zipf_alpha(alpha, seed=0, n=N_SMALL, n_items=ITEMS):
+    rng = np.random.default_rng(seed)
+    if alpha > 1: return ((rng.zipf(alpha, n) - 1) % n_items).tolist()
+    return _zipf(rng, n, n_items, alpha).tolist()
+
+
+def zipf_unbounded(seed=0, n=N_SMALL, alpha=1.2):
+    """data_gen/generate_zipf_data.py: raw numpy zipf ids, long tail left unbounded."""
+    return np.random.default_rng(seed).zipf(alpha, n).tolist()
+
+
+def web_traffic(seed=0, n=N_SMALL, n_items=5000):
+    """data_gen/generate_web_traffic.py: 70% of requests to a 5% hot set; 10% of it replaced every 2000 requests."""
+    rng = np.random.default_rng(seed)
+    hot = rng.choice(np.arange(1, n_items + 1), n_items // 20, replace=False)
+    k = len(hot) // 10
+    out = np.empty(n, np.int64)
+    for s in range(0, n, 2000):
+        if s: hot[rng.choice(len(hot), k, replace=False)] = rng.choice(np.arange(1, n_items + 1), k, replace=False)
+        m = min(2000, n - s)
+        is_hot = rng.random(m) < 0.7
+        out[s:s + m] = np.where(is_hot, rng.choice(hot, m), rng.integers(1, n_items + 1, m))
+    return out.tolist()
+
+
+def uniform(seed=0, n=N_SMALL, n_items=ITEMS):
+    return np.random.default_rng(seed).integers(0, n_items, n).tolist()
+
+
+def gaussian(seed=0, n=N_SMALL, n_items=ITEMS):
+    s = np.random.default_rng(seed).normal(n_items / 2, n_items / 6, n)
+    return np.clip(s, 0, n_items - 1).astype(int).tolist()
+
+
+def bursty(seed=0, n=N_SMALL, n_items=ITEMS):
+    """Uniform background; with 10% chance per step, a burst of 10-99 repeats of one key."""
+    rng, s = np.random.default_rng(seed), []
+    while len(s) < n:
+        if rng.random() < 0.1: s.extend([int(rng.integers(n_items))] * int(rng.integers(10, 100)))
+        else: s.append(int(rng.integers(n_items)))
+    return s[:n]
+
+
+def periodic(seed=0, n=N_SMALL, n_items=ITEMS, period=5000):
+    """80% of requests go to a 100-key hot window that shifts by 100 keys every `period` requests."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(n)
+    shift = (t // period) * 100 % n_items
+    hot = (shift + rng.integers(0, 100, n)) % n_items
+    return np.where(rng.random(n) < 0.8, hot, rng.integers(0, n_items, n)).tolist()
+
+
+def adversarial(seed=0, n=N_SMALL, loop=31):
+    """Cyclic scan over 31 keys (one more than the original 30-slot target cache). Deterministic up to a key
+    relabelling, so instances differ only in labels; kept for completeness."""
+    perm = np.random.default_rng(seed).permutation(loop) if seed else np.arange(loop)
+    return np.resize(perm, n).tolist()
+
+
+# ---------- trend workloads (1M requests) ----------
 def lifecycle(n=1_000_000, seed=0):
     """Items are born at random times; each one's requests rise and decay (gamma(2, tau) after birth)."""
     rng = np.random.default_rng(seed)
@@ -65,8 +131,21 @@ def phases(n=1_000_000, seed=0, rounds=2):
     return np.concatenate(out)[:n].tolist()
 
 
-_CSV = [os.path.join(ROOT, 'data', f) for f in ('zipf_100k.csv', 'web_traffic_100k.csv')]
-_CSV += sorted(glob.glob(os.path.join(ROOT, 'archive', 'data_gen', '*.csv')))
-CSV = {os.path.basename(p)[:-4]: (lambda p=p: load_csv(p)) for p in _CSV}
+SMALL = {
+    'zipf_100k': zipf_unbounded, 'web_traffic_100k': web_traffic,
+    **{f'zipf_alpha_{a}': (lambda seed=0, a=a: zipf_alpha(a, seed)) for a in (0.5, 0.8, 1.0, 1.2, 1.5)},
+    'uniform': uniform, 'gaussian': gaussian, 'bursty': bursty, 'periodic': periodic, 'adversarial': adversarial,
+}
 TREND = {'lifecycle': lifecycle, 'cycle': cycle, 'phases': phases}
-SUITE = {**CSV, **TREND}
+REAL = realtraces.REAL
+SUITE = [*TREND, *SMALL, *REAL]
+
+
+def make(name, inst=0, n_trend=1_000_000, n_real=realtraces.N):
+    """Trace `name`, instance `inst` (the generator seed). Real traces have a single instance (first n_real requests)."""
+    if name in TREND: return TREND[name](n_trend, seed=inst)
+    if name in SMALL: return SMALL[name](seed=inst)
+    if name in REAL:
+        assert inst == 0, 'real traces have one instance'
+        return realtraces.load(name, n_real)
+    raise KeyError(name)
